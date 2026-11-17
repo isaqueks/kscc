@@ -1193,9 +1193,10 @@ static void assign_lvar_offsets(Obj *prog) {
 // kscc: valor de 32 bits de uma relocação (`.word sym + addend`).
 static void emit_reloc(Relocation *rel) {
   int32_t addend = (int32_t)(uint32_t)rel->addend;
+  // A magnitude é calculada sem sinal: -INT32_MIN não cabe em int.
+  uint32_t mag = addend < 0 ? 0u - (uint32_t)addend : (uint32_t)addend;
   if (addend)
-    println("  .word %s %c %d", *rel->label, addend < 0 ? '-' : '+',
-            addend < 0 ? -addend : addend);
+    println("  .word %s %c %u", *rel->label, addend < 0 ? '-' : '+', mag);
   else
     println("  .word %s", *rel->label);
 }

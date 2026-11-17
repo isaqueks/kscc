@@ -3220,6 +3220,14 @@ static Node *funcall(Token **rest, Token *tok, Node *fn) {
       error_tok(tok, "too many arguments");
 
     if (param_ty) {
+      // kscc: struct/union passada a parâmetro escalar (ou o contrário, ou
+      // outra struct) era aceita: o escalar ia em registrador e o chamado
+      // lia a struct da pilha, ou a struct virava o seu endereço.
+      bool p_agg = param_ty->kind == TY_STRUCT || param_ty->kind == TY_UNION;
+      bool a_agg = arg->ty->kind == TY_STRUCT || arg->ty->kind == TY_UNION;
+      if (p_agg != a_agg || (p_agg && !is_compatible(param_ty, arg->ty)))
+        error_tok(arg->tok, "incompatible type for argument");
+
       if (param_ty->kind != TY_STRUCT && param_ty->kind != TY_UNION)
         arg = new_cast(arg, param_ty);
       param_ty = param_ty->next;

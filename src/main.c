@@ -555,6 +555,18 @@ int run_subprocess_capture(char **argv, char *errfile) {
 
   if (WIFEXITED(status))
     return WEXITSTATUS(status);
+
+  // kscc: um subprocesso morto por sinal (cc1 com SIGSEGV, ksas abortado)
+  // fazia o driver sair com 1 sem mensagem nenhuma.
+  if (WIFSIGNALED(status)) {
+    char *what = argv[0];
+    for (int i = 1; argv[i]; i++)
+      if (!strcmp(argv[i], "-cc1-input") && argv[i + 1])
+        what = format("cc1 (%s)", argv[i + 1]);
+    fprintf(stderr, "kscc: %s terminou pelo sinal %d (%s)\n", what,
+            WTERMSIG(status), strsignal(WTERMSIG(status)));
+    return 128 + WTERMSIG(status);
+  }
   return 128;
 }
 
@@ -815,6 +827,15 @@ int main(int argc, char **argv) {
 
   if (input_paths.len > 1 && opt_o && (opt_c || opt_S || opt_E))
     error("nao e possivel usar '-o' com '-c', '-S' ou '-E' e varios arquivos");
+
+  // kscc: como o gcc, recusa uma saída que é um dos arquivos de entrada
+  // (`kscc -S -o x.c x.c` sobrescrevia o fonte com o assembly).
+  struct stat so, si;
+  if (opt_o && strcmp(opt_o, "-") && !stat(opt_o, &so))
+    for (int i = 0; i < input_paths.len; i++)
+      if (!stat(input_paths.data[i], &si) && si.st_dev == so.st_dev &&
+          si.st_ino == so.st_ino)
+        error("o arquivo de entrada '%s' e o mesmo que o de saida", input_paths.data[i]);
 
   // kscc: objetos (.kso) a concatenar no link, com o nome de exibição de
   // cada um para as mensagens de erro do ksas.

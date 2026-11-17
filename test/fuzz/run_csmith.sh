@@ -43,7 +43,8 @@ for ((i = 0; i < N; i++)); do
   seed=$((SEED0 + i))
   name="csmith-$seed"
   src="$OUT/$name.c"
-  csmith --seed "$seed" $CSMITH_OPTS -o "$src" > /dev/null 2>&1 || { skip=$((skip + 1)); continue; }
+  # (o csmith grava platform.info no diretório corrente)
+  (cd "$OUT" && csmith --seed "$seed" $CSMITH_OPTS -o "$name.c" > /dev/null 2>&1) || { skip=$((skip + 1)); continue; }
   diff_one "$name" "$src" "$OUT" "$INCS"
   case $verdict in
   pass) pass=$((pass + 1)) ;;

@@ -3567,6 +3567,24 @@ static bool is_function(Token *tok) {
 }
 
 // Remove redundant tentative definitions.
+// kscc: definição provisória de array sem tamanho (`int a[];`) que fica
+// sem definição na unidade: o C11 6.9.2p2 a trata como `int a[1]` (ou com
+// o tamanho de outra declaração do mesmo nome, `extern int a[5];`). O
+// chibicc a emitia com tamanho negativo, e o kscc com 0 bytes: escrever
+// a[0] sobrescrevia o objeto seguinte em silêncio.
+static void complete_tentative_array(Obj *var) {
+  if (var->ty->kind != TY_ARRAY || var->ty->array_len >= 0)
+    return;
+
+  for (Obj *v = globals; v; v = v->next)
+    if (v != var && v->ty->kind == TY_ARRAY && v->ty->array_len >= 0 &&
+        !strcmp(v->name, var->name)) {
+      var->ty = v->ty;
+      return;
+    }
+  var->ty = array_of(var->ty->base, 1);
+}
+
 static void scan_globals(void) {
   Obj head;
   Obj *cur = &head;
@@ -3597,8 +3615,10 @@ static void scan_globals(void) {
 
     // If there's another definition, the tentative definition
     // is redundant
-    if (!var2)
+    if (!var2) {
+      complete_tentative_array(var);
       cur = cur->next = var;
+    }
   }
 
   cur->next = NULL;

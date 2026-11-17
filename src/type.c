@@ -291,6 +291,12 @@ void add_type(Node *node) {
   case ND_COND:
     if (node->then->ty->kind == TY_VOID || node->els->ty->kind == TY_VOID) {
       node->ty = ty_void;
+    } else if ((node->then->ty->kind == TY_STRUCT || node->then->ty->kind == TY_UNION) &&
+               node->then->ty->kind == node->els->ty->kind) {
+      // kscc: struct/union não passa pelas conversões aritméticas: com
+      // menos de 4 bytes, a promoção a int fazia do valor o endereço da
+      // struct com tipo int (herdado do chibicc).
+      node->ty = node->then->ty;
     } else {
       usual_arith_conv(&node->then, &node->els);
       node->ty = node->then->ty;

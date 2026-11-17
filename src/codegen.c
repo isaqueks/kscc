@@ -1097,6 +1097,16 @@ static void emit_reloc(Relocation *rel) {
     println("  .word %s", *rel->label);
 }
 
+// kscc: objeto const (ou array de const): vai para .rodata, que fica na
+// região de código, só leitura. Escrever nele dá FAULT_MEM_PERM em vez de
+// corromper o valor (doc 02 §5).
+static bool is_const_object(Type *ty) {
+  for (; ty->kind == TY_ARRAY; ty = ty->base)
+    if (ty->is_const)
+      return true;
+  return ty->is_const;
+}
+
 static void emit_data(Obj *prog) {
   for (Obj *var = prog; var; var = var->next) {
     if (var->is_function || !var->is_definition)
@@ -1128,7 +1138,8 @@ static void emit_data(Obj *prog) {
 
     // .data / .rodata
     if (var->init_data) {
-      println("  %s", var->is_str_lit ? ".rodata" : ".data");
+      bool rodata = var->is_str_lit || is_const_object(var->ty);
+      println("  %s", rodata ? ".rodata" : ".data");
       if (align > 1)
         println("  .align %d", align);
       println("%s:", sym(var));

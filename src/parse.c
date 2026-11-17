@@ -409,6 +409,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
   Type *ty = ty_int;
   int counter = 0;
   bool is_atomic = false;
+  bool is_const = false;
 
   while (is_typename(tok)) {
     // Handle storage class specifiers.
@@ -440,8 +441,14 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
       continue;
     }
 
+    // kscc: const é lembrado (ver o fim da função); os demais, ignorados.
+    if (consume(&tok, tok, "const")) {
+      is_const = true;
+      continue;
+    }
+
     // These keywords are recognized but ignored.
-    if (consume(&tok, tok, "const") || consume(&tok, tok, "volatile") ||
+    if (consume(&tok, tok, "volatile") ||
         consume(&tok, tok, "auto") || consume(&tok, tok, "register") ||
         consume(&tok, tok, "restrict") || consume(&tok, tok, "__restrict") ||
         consume(&tok, tok, "__restrict__") || consume(&tok, tok, "_Noreturn"))
@@ -591,6 +598,15 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
     ty->is_atomic = true;
   }
 
+  // kscc: o qualificador const vai para uma cópia do tipo, para que
+  // emit_data ponha objetos globais const em .rodata (doc 02 §5). Uma
+  // struct/union ainda incompleta não é copiada: a cópia não veria a
+  // definição posterior; nesse caso o objeto fica em .data, como antes.
+  if (is_const && !((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size < 0)) {
+    ty = copy_type(ty);
+    ty->is_const = true;
+  }
+
   *rest = tok;
   return ty;
 }
@@ -692,8 +708,12 @@ static Type *pointers(Token **rest, Token *tok, Type *ty) {
   while (consume(&tok, tok, "*")) {
     ty = pointer_to(ty);
     while (equal(tok, "const") || equal(tok, "volatile") || equal(tok, "restrict") ||
-           equal(tok, "__restrict") || equal(tok, "__restrict__"))
+           equal(tok, "__restrict") || equal(tok, "__restrict__")) {
+      // kscc: `T *const p` é um ponteiro const (vai para .rodata se global).
+      if (equal(tok, "const"))
+        ty->is_const = true;
       tok = tok->next;
+    }
   }
   *rest = tok;
   return ty;

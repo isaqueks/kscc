@@ -336,6 +336,7 @@ struct Type {
   int align;          // alignment
   bool is_unsigned;   // unsigned or signed
   bool is_atomic;     // true if _Atomic
+  bool is_const;      // kscc: qualificado com const (globais vão para .rodata)
   Type *origin;       // for type compatibility check
 
   // Pointer-to or array-of type. We intentionally use the same member

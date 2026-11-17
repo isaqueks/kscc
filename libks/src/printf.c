@@ -271,9 +271,18 @@ static int convert(Out *o, Spec *sp, int conv, va_list *ap) {
   case 's':
     put_str(o, sp, va_arg(*ap, const char *));
     return 1;
-  case 'n':
-    *va_arg(*ap, int *) = o->len;
+  case 'n': {
+    // hh e h gravam num signed char/short: gravar um int pisaria nos
+    // bytes vizinhos do objeto apontado.
+    void *p = va_arg(*ap, void *);
+    if (sp->size == 'H')
+      *(signed char *)p = o->len;
+    else if (sp->size == 'h')
+      *(short *)p = o->len;
+    else
+      *(int *)p = o->len;
     return 1;
+  }
   case '%':
     put(o, '%');
     return 1;

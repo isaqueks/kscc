@@ -17,7 +17,8 @@ extern int ks_errno;
 #define EAGAIN 5   // KSVM_ERR_AGAIN: nada disponível agora
 #define EKSEOF 6   // KSVM_ERR_EOF: fim da entrada (sem equivalente POSIX)
 #define ENOMEM 12  // malloc sem memória
-#define EDOM 33
+#define EDOM 33    // C11 7.5p2 exige EDOM, EILSEQ e ERANGE
+#define EILSEQ 84
 #define ERANGE 34  // strtol/strtoul fora da faixa
 
 #endif

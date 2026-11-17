@@ -24,7 +24,7 @@ typedef struct {
   Obj *var;
   Type *type_def;
   Type *enum_ty;
-  int enum_val;
+  int64_t enum_val; // kscc: int64_t para guardar valores de unsigned int
 } VarScope;
 
 // Represents a block scope.
@@ -813,24 +813,42 @@ static Type *enum_specifier(Token **rest, Token *tok) {
   tok = skip(tok, "{");
 
   // Read an enum-list.
+  //
+  // kscc: o C11 6.7.2.2p2 exige valores que caibam em int. Como o gcc
+  // (extensão aceita sem aviso em -Wall), um valor entre INT_MAX + 1 e
+  // UINT_MAX (`F = 1u << 31`) faz do enum e de todas as suas constantes
+  // unsigned int; antes o valor virava um int negativo em silêncio e
+  // `F > 0` era falso. Valores negativos junto com esses não cabem em 32
+  // bits: erro.
   int i = 0;
-  int val = 0;
+  int64_t val = 0;
+  bool has_neg = false, has_big = false;
   while (!consume_end(rest, tok)) {
     if (i++ > 0)
       tok = skip(tok, ",");
 
     char *name = get_ident(tok);
+    Token *start = tok;
     tok = tok->next;
 
     if (equal(tok, "="))
       val = const_expr(&tok, tok->next);
 
+    if (val > UINT32_MAX)
+      error_tok(start, "valor do enumerador nao cabe em 32 bits");
+    has_neg |= val < 0;
+    has_big |= val > INT32_MAX;
+    if (has_neg && has_big)
+      error_tok(start, "valores do enum nao cabem em int nem em unsigned int");
+
     VarScope *sc = push_scope(name);
     sc->enum_ty = ty;
     sc->enum_val = val;
-    // kscc: sem overflow com sinal no host depois de INT_MAX (UBSan).
-    val = (int)((unsigned)val + 1);
+    val++;
   }
+
+  if (has_big)
+    ty->is_unsigned = true;
 
   if (tag)
     push_tag_scope(tag, ty);
@@ -3346,8 +3364,12 @@ static Node *primary(Token **rest, Token *tok) {
     if (sc) {
       if (sc->var)
         return new_var_node(sc->var, tok);
-      if (sc->enum_ty)
-        return new_num(sc->enum_val, tok);
+      if (sc->enum_ty) {
+        Node *node = new_num(sc->enum_val, tok);
+        if (sc->enum_ty->is_unsigned)
+          node->ty = ty_uint; // kscc: ver enum_specifier
+        return node;
+      }
     }
 
     if (equal(tok->next, "("))

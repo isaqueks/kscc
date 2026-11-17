@@ -33,6 +33,19 @@ static char *L;
 static void gen_expr(Node *node);
 static void gen_stmt(Node *node);
 
+// kscc: escopos de labels para saltos para fora de `({ ... })` (ver
+// unwind_to_label).
+static HashMap label_scope;
+static Node top_scope;
+
+typedef struct {
+  Node *scope;
+  int depth;
+} ScopeDepth;
+
+static ScopeDepth *scope_depth;
+static int scope_len, scope_cap;
+
 __attribute__((format(printf, 1, 2)))
 static void println(char *fmt, ...) {
   va_list ap;
@@ -672,8 +685,14 @@ static void gen_expr(Node *node) {
     store(node->ty);
     return;
   case ND_STMT_EXPR:
+    if (scope_len == scope_cap) {
+      scope_cap = scope_cap ? scope_cap * 2 : 8;
+      scope_depth = realloc(scope_depth, sizeof(ScopeDepth) * scope_cap);
+    }
+    scope_depth[scope_len++] = (ScopeDepth){node, depth};
     for (Node *n = node->body; n; n = n->next)
       gen_stmt(n);
+    scope_len--;
     return;
   case ND_COMMA:
     gen_expr(node->lhs);
@@ -896,6 +915,78 @@ static void gen_expr(Node *node) {
   error_tok(node->tok, "invalid expression");
 }
 
+// kscc: um salto (goto, break, continue) para fora de uma expressão-
+// comando `({ ... })` pode partir com temporários na pilha: `x + ({ if (c)
+// continue; 1; })` já empilhou x. O GCC permite sair assim (só é proibido
+// entrar), e sem ajuste cada salto deixava 4 bytes por temporário na
+// pilha (um laço estourava). Antes de gerar a função, label_scope liga
+// cada label ao ND_STMT_EXPR mais interno que o contém (top_scope se
+// nenhum); durante a geração, scope_depth guarda o `depth` em que cada
+// ND_STMT_EXPR ativo começou, que é o `depth` dos seus labels. O salto
+// desempilha a diferença. Fora de expressões-comando depth é 0 nos
+// comandos, e nada muda.
+static void find_label_scopes(Node *node, Node *scope);
+
+static void find_label_scopes_list(Node *node, Node *scope) {
+  for (; node; node = node->next)
+    find_label_scopes(node, scope);
+}
+
+static void find_label_scopes(Node *node, Node *scope) {
+  if (!node)
+    return;
+
+  switch (node->kind) {
+  case ND_LABEL:
+    hashmap_put(&label_scope, node->unique_label, scope);
+    break;
+  case ND_FOR:
+  case ND_DO:
+  case ND_SWITCH:
+    if (node->brk_label)
+      hashmap_put(&label_scope, node->brk_label, scope);
+    if (node->cont_label)
+      hashmap_put(&label_scope, node->cont_label, scope);
+    break;
+  case ND_STMT_EXPR:
+    find_label_scopes_list(node->body, node);
+    return;
+  }
+
+  find_label_scopes(node->lhs, scope);
+  find_label_scopes(node->rhs, scope);
+  find_label_scopes(node->cond, scope);
+  find_label_scopes(node->then, scope);
+  find_label_scopes(node->els, scope);
+  find_label_scopes(node->init, scope);
+  find_label_scopes(node->inc, scope);
+  find_label_scopes_list(node->body, scope);
+  find_label_scopes_list(node->args, scope);
+}
+
+// Desempilha os temporários acima do nível do label antes de saltar.
+static void unwind_to_label(char *label) {
+  if (depth == 0)
+    return;
+
+  Node *scope = hashmap_get(&label_scope, label);
+  if (!scope)
+    return;
+
+  int target = -1;
+  if (scope == &top_scope)
+    target = 0;
+  for (int i = scope_len - 1; i >= 0 && target < 0; i--)
+    if (scope_depth[i].scope == scope)
+      target = scope_depth[i].depth;
+
+  // Alvo dentro de uma expressão-comando que não está ativa: salto para
+  // dentro dela, que o C não permite. Nada a ajustar.
+  if (target < 0 || target >= depth)
+    return;
+  add_imm("sp", "sp", (depth - target) * 4);
+}
+
 static void gen_stmt(Node *node) {
   emit_loc(node->tok);
 
@@ -979,6 +1070,7 @@ static void gen_stmt(Node *node) {
       gen_stmt(n);
     return;
   case ND_GOTO:
+    unwind_to_label(node->unique_label);
     println("  jmp %s", node->unique_label);
     return;
   case ND_GOTO_EXPR:
@@ -1266,6 +1358,8 @@ static void emit_text(Obj *prog) {
     }
 
     // Emit code
+    label_scope = (HashMap){0};
+    find_label_scopes(fn->body, &top_scope);
     gen_stmt(fn->body);
     assert(depth == 0);
 

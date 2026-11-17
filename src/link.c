@@ -173,7 +173,10 @@ static int run_ksas(LinkOptions *o, char *input, char *output, char *errfile) {
 // esboços.
 // Arquivo de validação: a unidade + uma instrução-esboço (o ksas recusa
 // imagem sem nenhuma instrução em .text, caso de uma unidade só com dados)
-// + labels-esboço para os símbolos externos.
+// + labels-esboço para os símbolos externos. Os esboços ficam antes da
+// instrução: um label depois da última instrução aponta para fora do
+// código, e o ksas recusa desvio para lá (o caso do crt0, cujo .text
+// termina logo depois de "call exit").
 static char *write_check_file(char *text, StringArray *undef) {
   char *tmp = create_tmpfile();
   FILE *out = fopen(tmp, "w");
@@ -181,9 +184,10 @@ static char *write_check_file(char *text, StringArray *undef) {
     error("%s: %s", tmp, strerror(errno));
   fputs(text, out);
   fprintf(out, "\n; kscc: esbocos para validar a unidade isolada\n\t.text\n");
-  fprintf(out, "__kscc_check_stub:\n\thalt\n");
+  fprintf(out, "__kscc_check_stub:\n");
   for (int i = 0; i < undef->len; i++)
     fprintf(out, "%s:\n", undef->data[i]);
+  fprintf(out, "\thalt\n");
   fclose(out);
   return tmp;
 }

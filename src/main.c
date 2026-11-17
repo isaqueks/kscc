@@ -15,9 +15,10 @@ typedef enum {
 } FileType;
 
 StringArray include_paths;
-// kscc: sem diretiva .comm no ksas; definições provisórias viram .bss
-// comuns (como -fno-common). Ver test/chibicc/SKIP (commonsym.c).
-bool opt_fcommon = false;
+// kscc: como no chibicc, definições provisórias são símbolos comuns por
+// padrão. O ksas não tem .comm: o codegen emite um marcador e o link
+// (src/link.c) faz a deduplicação. -fno-common as torna .bss comuns.
+bool opt_fcommon = true;
 bool opt_fpic;
 
 // Identificador curto e único da unidade de tradução (doc 02 §5).
@@ -250,7 +251,7 @@ static void parse_args(int argc, char **argv) {
     }
 
     if (!strcmp(argv[i], "-fcommon")) {
-      // kscc: aceito, mas sem efeito (ver opt_fcommon).
+      opt_fcommon = true;
       continue;
     }
 

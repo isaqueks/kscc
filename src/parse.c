@@ -105,6 +105,7 @@ static char *cont_label;
 static Node *current_switch;
 
 static Obj *builtin_alloca;
+static Obj *builtin_alloca2; // kscc: __builtin_alloca, sinônimo de alloca
 
 // kscc: true enquanto o preprocessador avalia um #if (ver pp_const_expr).
 static bool pp_mode;
@@ -855,6 +856,8 @@ static Node *compute_vla_size(Type *ty, Token *tok) {
 }
 
 static Node *new_alloca(Node *sz) {
+  // kscc: o prólogo só guarda sp em alloca_bottom se a função usa alloca.
+  current_fn->uses_alloca = true;
   Node *node = new_unary(ND_FUNCALL, new_var_node(builtin_alloca, sz->tok), sz->tok);
   node->func_ty = builtin_alloca->ty;
   node->ty = builtin_alloca->ty->return_ty;
@@ -896,6 +899,14 @@ static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr) 
     if (ty->kind == TY_VLA) {
       if (equal(tok, "="))
         error_tok(tok, "variable-sized object may not be initialized");
+
+      // kscc: alloca devolve memória alinhada a 4 (doc 03 §2); um VLA de
+      // elementos com alinhamento maior ficaria desalinhado.
+      Type *elem = ty;
+      while (elem->base && (elem->kind == TY_VLA || elem->kind == TY_ARRAY))
+        elem = elem->base;
+      if (elem->align > 4 || (attr && attr->align > 4))
+        error_tok(ty->name, "VLA com alinhamento > 4 nao suportado nesta versao do kscc");
 
       // Variable length arrays (VLAs) are translated to alloca() calls.
       // For example, `int x[n+2]` is translated to `tmp = n + 2,
@@ -3010,6 +3021,12 @@ static Node *funcall(Token **rest, Token *tok, Node *fn) {
   node->ty = ty->return_ty;
   node->args = head.next;
 
+  // kscc: alloca é builtin (codegen.c, builtin_alloca); o prólogo da
+  // função que o chama precisa guardar sp em alloca_bottom.
+  if (fn->kind == ND_VAR &&
+      (fn->var == builtin_alloca || fn->var == builtin_alloca2) && current_fn)
+    current_fn->uses_alloca = true;
+
   // If a function returns a struct, it is caller's responsibility
   // to allocate a space for the return value.
   if (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION)
@@ -3135,6 +3152,18 @@ static Node *primary(Token **rest, Token *tok) {
     Type *t2 = typename(&tok, tok);
     *rest = skip(tok, ")");
     return new_num(is_compatible(t1, t2), start);
+  }
+
+  // kscc: [GNU] __builtin_expect(e, c) vale e (convertido a long); c é só
+  // uma dica para o otimizador, que o kscc não usa, mas tem de ser
+  // constante.
+  if (equal(tok, "__builtin_expect")) {
+    tok = skip(tok->next, "(");
+    Node *node = assign(&tok, tok);
+    tok = skip(tok, ",");
+    const_expr(&tok, tok);
+    *rest = skip(tok, ")");
+    return new_cast(node, ty_long);
   }
 
   if (equal(tok, "__builtin_reg_class")) {
@@ -3342,8 +3371,10 @@ static Token *function(Token *tok, Type *basety, VarAttr *attr) {
 
   // A buffer for a struct/union return value is passed
   // as the hidden first parameter.
+  // kscc: na KSVM, struct/union de até 4 bytes volta em r1; maior, por
+  // ponteiro oculto (doc 02 §3.3; no x86-64 o limiar era 16).
   Type *rty = ty->return_ty;
-  if ((rty->kind == TY_STRUCT || rty->kind == TY_UNION) && rty->size > 16)
+  if ((rty->kind == TY_STRUCT || rty->kind == TY_UNION) && rty->size > 4)
     new_lvar("", pointer_to(rty));
 
   fn->params = locals;
@@ -3441,6 +3472,10 @@ static void declare_builtin_functions(void) {
   ty->params = copy_type(ty_int);
   builtin_alloca = new_gvar("alloca", ty);
   builtin_alloca->is_definition = false;
+
+  // kscc: __builtin_alloca (GCC) é o mesmo builtin.
+  builtin_alloca2 = new_gvar("__builtin_alloca", ty);
+  builtin_alloca2->is_definition = false;
 }
 
 // program = (typedef | function-definition | global-variable)*

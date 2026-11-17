@@ -135,6 +135,9 @@ struct Obj {
 
   // Local variable
   int offset;
+  // kscc: local com alinhamento > 4. `offset` é relativo à base alinhada
+  // da função (ver assign_lvar_offsets em codegen.c), não a fp.
+  bool in_align_area;
 
   // Global variable or function
   bool is_function;
@@ -156,6 +159,13 @@ struct Obj {
   Obj *va_area;
   Obj *alloca_bottom;
   int stack_size;
+  // kscc: a função chama alloca (ou declara VLA): só então o prólogo
+  // guarda sp em alloca_bottom.
+  bool uses_alloca;
+  // kscc: área de locais com alinhamento > 4 (ver assign_lvar_offsets).
+  int align_max;         // maior alinhamento entre essas locais (0 = não há)
+  int align_base_offset; // slot (fp + off) com o endereço da base alinhada
+  int align_top;         // a base é (fp - align_top) & -align_max
 
   // Static inline function
   bool is_live;

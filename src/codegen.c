@@ -12,8 +12,7 @@
 //  - binários: gen_expr(rhs); push; gen_expr(lhs); pop r2 -> r1 op r2.
 //
 // Não suportado nesta versão (erro de compilação, nunca código errado):
-// ponto flutuante, long long, struct/union por valor em chamadas e
-// retornos (fase 2), alloca/VLA (fase 3), TLS, atômicos e asm.
+// ponto flutuante, long long, TLS, atômicos e asm.
 
 #include "chibicc.h"
 
@@ -98,6 +97,38 @@ static void add_imm(char *rd, char *rs, int imm) {
     println("  addl %s, %s, %d", rd, rs, imm);
 }
 
+// kscc: rd = [fp + off], com off de qualquer tamanho.
+static void load_fp_slot(char *rd, int off) {
+  if (is_imm14(off)) {
+    println("  ldw %s, [fp + %d]", rd, off);
+    return;
+  }
+  add_imm(rd, "fp", off);
+  println("  ldw %s, [%s]", rd, rd);
+}
+
+// kscc: [fp + off] = rs; tmp é usado se off não cabe em 14 bits.
+static void store_fp_slot(char *rs, int off, char *tmp) {
+  if (is_imm14(off)) {
+    println("  stw [fp + %d], %s", off, rs);
+    return;
+  }
+  add_imm(tmp, "fp", off);
+  println("  stw [%s], %s", tmp, rs);
+}
+
+// kscc: endereço de uma variável local em `reg`. Locais com alinhamento
+// maior que 4 ficam numa área alinhada cuja base é calculada no prólogo e
+// guardada num slot do frame (fp só é garantidamente múltiplo de 4).
+static void lvar_addr(char *reg, Obj *var) {
+  if (var->in_align_area) {
+    load_fp_slot(reg, current_fn->align_base_offset);
+    add_imm(reg, reg, var->offset);
+    return;
+  }
+  add_imm(reg, "fp", var->offset);
+}
+
 // kscc: nome do símbolo no assembly. Objetos static já foram renomeados
 // para _S<id>_nome em mangle_static_symbols().
 static char *sym(Obj *var) {
@@ -131,12 +162,15 @@ static void gen_addr(Node *node) {
   switch (node->kind) {
   case ND_VAR:
     // Variable-length array, which is always local.
-    if (node->var->ty->kind == TY_VLA)
-      error_tok(node->tok, "VLA nao suportado nesta versao do kscc");
+    // kscc: o slot do VLA guarda o ponteiro devolvido por alloca.
+    if (node->var->ty->kind == TY_VLA) {
+      load_fp_slot("r1", node->var->offset);
+      return;
+    }
 
     // Local variable
     if (node->var->is_local) {
-      add_imm("r1", "fp", node->var->offset);
+      lvar_addr("r1", node->var);
       return;
     }
 
@@ -174,7 +208,8 @@ static void gen_addr(Node *node) {
     }
     break;
   case ND_VLA_PTR:
-    error_tok(node->tok, "VLA nao suportado nesta versao do kscc");
+    add_imm("r1", "fp", node->var->offset);
+    return;
   }
 
   error_tok(node->tok, "not an lvalue");
@@ -352,9 +387,19 @@ static void cast(Type *from, Type *to) {
     println("  %s", cast_table[t1][t2]);
 }
 
-// kscc: classificação dos argumentos (doc 02 §3.1): os 4 primeiros
-// escalares vão em r1-r4, o resto na pilha; em chamadas variádicas, todos
-// na pilha. Structs por valor ficam para a fase 2.
+// kscc: struct/union de N bytes como argumento: cópia na pilha,
+// arredondada a múltiplo de 4 (doc 02 §3.1). r1 = endereço da origem.
+// Os bytes de preenchimento ficam indefinidos, como no chibicc.
+static void push_struct(Type *ty) {
+  int sz = align_to(ty->size, 4);
+  add_imm("sp", "sp", -sz);
+  depth += sz / 4;
+
+  // copy_bytes avança os registradores no laço: copia para r2, nunca sp.
+  println("  mov r2, sp");
+  copy_bytes("r1", "r2", ty->size);
+}
+
 static void push_args2(Node *args, bool first_pass) {
   if (!args)
     return;
@@ -364,21 +409,55 @@ static void push_args2(Node *args, bool first_pass) {
     return;
 
   gen_expr(args);
-  push();
+
+  switch (args->ty->kind) {
+  case TY_STRUCT:
+  case TY_UNION:
+    push_struct(args->ty);
+    break;
+  default:
+    push();
+  }
 }
 
-// Load function call arguments. Arguments are evaluated right to left
-// and pushed; the ones passed by register are pushed last (second pass)
-// so that they can be popped to r1..r4 right before the call, leaving the
-// stack arguments in place with the leftmost one at the lowest address.
+// kscc: struct/union volta em r1 se tem até 4 bytes; senão o chamador
+// passa um ponteiro oculto como primeiro argumento (doc 02 §3.3).
+static bool has_ret_ptr(Node *node) {
+  return node->ret_buffer && node->ty->size > 4;
+}
+
+// Load function call arguments.
+//
+// kscc: convenção da KSVM (doc 02 §3.1). Os argumentos são avaliados da
+// direita para a esquerda e empilhados; os que vão em registrador são
+// empilhados por último (segunda passada) para serem desempilhados em
+// r1..r4 logo antes da chamada, deixando os da pilha no lugar, o mais à
+// esquerda no endereço mais baixo.
+//
+// - Os 4 primeiros escalares vão em r1-r4; o resto, na pilha (4 bytes
+//   cada).
+// - Struct/union vai sempre na pilha, copiada inteira e arredondada a 4,
+//   e não consome registrador.
+// - Função variádica com protótipo: tudo na pilha (doc 02 §3.2).
+// - Retorno de struct > 4 bytes: o endereço do buffer é um primeiro
+//   argumento oculto (r1, ou o primeiro slot da pilha se variádica).
 static int push_args(Node *node) {
   int stack = 0, gp = 0;
   bool variadic = is_abi_variadic(node->func_ty);
 
+  if (has_ret_ptr(node)) {
+    if (variadic)
+      stack++;
+    else
+      gp++;
+  }
+
   for (Node *arg = node->args; arg; arg = arg->next) {
-    if (is_struct(arg->ty))
-      error_tok(arg->tok, "struct/union passada por valor nao suportada "
-                "nesta versao do kscc");
+    if (is_struct(arg->ty)) {
+      arg->pass_by_stack = true;
+      stack += align_to(arg->ty->size, 4) / 4;
+      continue;
+    }
 
     if (variadic || gp++ >= GP_MAX) {
       arg->pass_by_stack = true;
@@ -388,7 +467,125 @@ static int push_args(Node *node) {
 
   push_args2(node->args, true);
   push_args2(node->args, false);
+
+  // If the return type is a large struct/union, the caller passes
+  // a pointer to a buffer as if it were the first argument.
+  if (has_ret_ptr(node)) {
+    lvar_addr("r1", node->ret_buffer);
+    push();
+  }
+
   return stack;
+}
+
+// kscc: depois da chamada, struct/union de até 4 bytes está em r1 (bytes
+// baixos); copia para o buffer de retorno do chamador.
+static void copy_ret_buffer(Obj *var) {
+  int sz = var->ty->size;
+  lvar_addr("r2", var);
+
+  switch (sz) {
+  case 0:
+    return;
+  case 1:
+    println("  stb [r2], r1");
+    return;
+  case 2:
+    println("  sth [r2], r1");
+    return;
+  case 3:
+    println("  sth [r2], r1");
+    println("  shri r1, r1, 16");
+    println("  stb [r2 + 2], r1");
+    return;
+  case 4:
+    println("  stw [r2], r1");
+    return;
+  }
+  unreachable();
+}
+
+// kscc: `return` de struct/union de até 4 bytes: r1 = endereço do valor;
+// carrega os bytes em r1 (os de preenchimento ficam zerados).
+static void copy_struct_reg(void) {
+  Type *ty = current_fn->ty->return_ty;
+
+  switch (ty->size) {
+  case 0:
+    return;
+  case 1:
+    println("  ldb r1, [r1]");
+    return;
+  case 2:
+    println("  ldh r1, [r1]");
+    return;
+  case 3:
+    println("  ldh r2, [r1]");
+    println("  ldb r1, [r1 + 2]");
+    println("  shli r1, r1, 16");
+    println("  or r1, r1, r2");
+    return;
+  case 4:
+    println("  ldw r1, [r1]");
+    return;
+  }
+  unreachable();
+}
+
+// kscc: `return` de struct/union maior: copia o valor (endereço em r1)
+// para o buffer do chamador, recebido no parâmetro oculto, e devolve o
+// endereço do buffer em r1 (doc 02 §3.3).
+static void copy_struct_mem(void) {
+  Type *ty = current_fn->ty->return_ty;
+  Obj *var = current_fn->params;
+
+  load_fp_slot("r2", var->offset);
+  copy_bytes("r1", "r2", ty->size);
+  load_fp_slot("r1", var->offset);
+}
+
+// kscc: alloca(n) com n em r1. Como no chibicc, os temporários que já
+// estão na pilha (entre alloca_bottom e sp: argumentos empilhados,
+// operandos pendentes) descem n bytes, e o bloco novo fica logo abaixo do
+// alloca_bottom antigo. n é arredondado a 4 (doc 03 §2). A liberação é o
+// `mov sp, fp` do epílogo.
+static void builtin_alloca(void) {
+  int c = count();
+  int bottom = current_fn->alloca_bottom->offset;
+
+  // Align size to 4 bytes.
+  println("  addi r1, r1, 3");
+  println("  andi r1, r1, -4");
+
+  // Shift the temporary area by r1.
+  load_fp_slot("r3", bottom);
+  println("  sub r3, r3, sp");    // r3 = bytes de temporários (múltiplo de 4)
+  println("  mov r4, sp");        // origem
+  println("  sub sp, sp, r1");
+  println("  mov r2, sp");        // destino
+  println("%s.alloca.%d:", L, c);
+  println("  cmp r3, zr");
+  println("  beq %s.alloca_end.%d", L, c);
+  println("  ldw r5, [r4]");
+  println("  stw [r2], r5");
+  println("  addi r4, r4, 4");
+  println("  addi r2, r2, 4");
+  println("  subi r3, r3, 4");
+  println("  jmp %s.alloca.%d", L, c);
+  println("%s.alloca_end.%d:", L, c);
+
+  // Move alloca_bottom pointer.
+  load_fp_slot("r2", bottom);
+  println("  sub r2, r2, r1");
+  store_fp_slot("r2", bottom, "r3");
+  println("  mov r1, r2");
+}
+
+// kscc: alloca e __builtin_alloca são tratados pelo compilador.
+static bool is_alloca_call(Node *node) {
+  return node->lhs->kind == ND_VAR && node->lhs->var->ty->kind == TY_FUNC &&
+         (!strcmp(node->lhs->var->name, "alloca") ||
+          !strcmp(node->lhs->var->name, "__builtin_alloca"));
 }
 
 // Generate code for a given node.
@@ -480,7 +677,7 @@ static void gen_expr(Node *node) {
     // ND_MEMZERO). r2 = endereço, r3 = contador no laço.
     int size = node->var->ty->size;
     int i = 0;
-    add_imm("r2", "fp", node->var->offset);
+    lvar_addr("r2", node->var);
     if (size > 64) {
       int c = count();
       println("  li r3, %d", size / 4);
@@ -551,12 +748,13 @@ static void gen_expr(Node *node) {
     return;
   }
   case ND_FUNCALL: {
-    if (node->lhs->kind == ND_VAR && !strcmp(node->lhs->var->name, "alloca"))
-      error_tok(node->tok, "alloca nao suportado nesta versao do kscc");
-
-    if (node->ret_buffer)
-      error_tok(node->tok, "retorno de struct/union nao suportado nesta "
-                "versao do kscc");
+    if (is_alloca_call(node)) {
+      if (!current_fn->uses_alloca)
+        unreachable();
+      gen_expr(node->args);
+      builtin_alloca();
+      return;
+    }
 
     int stack_args = push_args(node);
 
@@ -570,6 +768,12 @@ static void gen_expr(Node *node) {
     }
 
     int gp = 0;
+
+    // If the return type is a large struct/union, the caller passes
+    // a pointer to a buffer as if it were the first argument.
+    if (has_ret_ptr(node) && !is_abi_variadic(node->func_ty))
+      pop(argreg[gp++]);
+
     for (Node *arg = node->args; arg; arg = arg->next)
       if (!arg->pass_by_stack)
         pop(argreg[gp++]);
@@ -583,6 +787,17 @@ static void gen_expr(Node *node) {
       add_imm("sp", "sp", stack_args * 4);
 
     depth -= stack_args;
+
+    // kscc: struct/union devolvida: o valor da expressão é o endereço do
+    // buffer de retorno. Até 4 bytes, os bytes vêm em r1 e são copiados
+    // para lá; acima, o chamado já escreveu no buffer (e devolveu o
+    // endereço em r1, mas recalculá-lo não depende disso).
+    if (node->ret_buffer) {
+      if (!has_ret_ptr(node))
+        copy_ret_buffer(node->ret_buffer);
+      lvar_addr("r1", node->ret_buffer);
+      return;
+    }
 
     // kscc: o chamado já estende char/short/_Bool (doc 03, passo 7), mas
     // funções em .ksasm escritas à mão podem não fazê-lo; re-estender
@@ -765,10 +980,18 @@ static void gen_stmt(Node *node) {
     return;
   case ND_RETURN:
     if (node->lhs) {
-      if (is_struct(node->lhs->ty))
-        error_tok(node->tok, "retorno de struct/union nao suportado nesta "
-                  "versao do kscc");
       gen_expr(node->lhs);
+      Type *ty = node->lhs->ty;
+
+      switch (ty->kind) {
+      case TY_STRUCT:
+      case TY_UNION:
+        if (ty->size <= 4)
+          copy_struct_reg();
+        else
+          copy_struct_mem();
+        break;
+      }
     }
 
     println("  jmp %s.return.%s", L, current_fn->name);
@@ -786,8 +1009,19 @@ static void gen_stmt(Node *node) {
 // Assign offsets to local variables.
 //
 // kscc: frame da KSVM (doc 02 §4): [fp] = fp do chamador, [fp+4] = endereço
-// de retorno, argumentos na pilha a partir de fp+8, um por palavra. Os que
-// chegam em r1-r4 são copiados para slots locais no prólogo.
+// de retorno, argumentos na pilha a partir de fp+8, um por palavra
+// (struct/union: o tamanho arredondado a 4). Os que chegam em r1-r4 são
+// copiados para slots locais no prólogo. A ordem de classificação é a
+// mesma de push_args: o ponteiro oculto de retorno de struct (primeiro
+// parâmetro, criado pelo parser) conta como um escalar.
+//
+// Locais com alinhamento > 4 (_Alignas, structs com membros alinhados):
+// fp só é garantidamente múltiplo de 4, então elas vão para uma área
+// separada no fundo do frame, endereçada a partir de uma base alinhada
+// calculada no prólogo, B = (fp - align_top) & -align_max, e guardada no
+// slot fp + align_base_offset. O frame reserva align_max - 4 bytes de
+// folga para o arredondamento. Dentro da área o layout é o do chibicc, de
+// modo que `_Alignas(32) char x, y;` dá &y - &x == 32.
 static void assign_lvar_offsets(Obj *prog) {
   for (Obj *fn = prog; fn; fn = fn->next) {
     if (!fn->is_function)
@@ -800,9 +1034,15 @@ static void assign_lvar_offsets(Obj *prog) {
 
     // Assign offsets to pass-by-stack parameters.
     for (Obj *var = fn->params; var; var = var->next) {
-      if (is_struct(var->ty))
-        error_tok(fn->ty->name, "parametro struct/union por valor nao "
-                  "suportado nesta versao do kscc");
+      if (is_struct(var->ty)) {
+        // kscc: a cópia do chamador está só alinhada a 4.
+        if (var->align > 4)
+          error_tok(fn->ty->name, "parametro struct/union com alinhamento > 4 "
+                    "nao suportado nesta versao do kscc");
+        var->offset = top;
+        top += align_to(var->ty->size, 4);
+        continue;
+      }
 
       if (!variadic && gp++ < GP_MAX)
         continue;
@@ -812,16 +1052,20 @@ static void assign_lvar_offsets(Obj *prog) {
     }
 
     // Assign offsets to pass-by-register parameters and local variables.
+    int abottom = 0;
+    int amax = 0;
     for (Obj *var = fn->locals; var; var = var->next) {
       if (var->offset)
         continue;
 
-      // kscc: fp só é garantidamente múltiplo de 4; alinhar além disso
-      // exigiria ajustar sp no prólogo (fase 2).
-      if (var->align > 4)
-        error_tok(var->ty->name ? var->ty->name : fn->ty->name,
-                  "alinhamento > 4 em variavel local nao suportado nesta "
-                  "versao do kscc");
+      if (var->align > 4) {
+        abottom += var->ty->size;
+        abottom = align_to(abottom, var->align);
+        var->offset = -abottom;
+        var->in_align_area = true;
+        amax = MAX(amax, var->align);
+        continue;
+      }
 
       bottom += var->ty->size;
       bottom = align_to(bottom, var->align);
@@ -829,7 +1073,17 @@ static void assign_lvar_offsets(Obj *prog) {
     }
 
     // kscc: sp só precisa ser múltiplo de 4 (não 16 como no SysV).
-    fn->stack_size = align_to(bottom, 4);
+    bottom = align_to(bottom, 4);
+
+    if (amax) {
+      bottom += 4;
+      fn->align_base_offset = -bottom;
+      fn->align_top = bottom;
+      fn->align_max = amax;
+      bottom += amax - 4 + align_to(abottom, amax);
+    }
+
+    fn->stack_size = bottom;
   }
 }
 
@@ -860,8 +1114,17 @@ static void emit_data(Obj *prog) {
     // honrados porque o ksas alinha endereços absolutos.
     int align = var->align;
 
-    // Common symbol: o ksas não tem .comm; opt_fcommon fica desligado
-    // (ver main.c) e a definição provisória vira .bss.
+    // Common symbol
+    //
+    // kscc: o ksas não tem .comm. A definição provisória (`int x;` sem
+    // static/extern/inicializador) vira uma linha-marcador que o link
+    // (src/link.c, resolve_commons) junta entre as unidades: se alguma
+    // unidade define o símbolo, vale essa definição; senão o link cria um
+    // único .bss com o maior tamanho e alinhamento pedidos.
+    if (opt_fcommon && var->is_tentative && !var->is_static) {
+      println("; kscc-common: %s %d %d", sym(var), MAX(var->ty->size, 0), align);
+      continue;
+    }
 
     // .data / .rodata
     if (var->init_data) {
@@ -938,9 +1201,6 @@ static void emit_text(Obj *prog) {
       continue;
 
     Type *rty = fn->ty->return_ty;
-    if (is_struct(rty))
-      error_tok(fn->ty->name, "retorno de struct/union nao suportado nesta "
-                "versao do kscc");
     if (is_flonum(rty) || (is_integer(rty) && rty->size > 4))
       error_tok(fn->ty->name, "tipo de retorno nao suportado nesta versao do kscc");
 
@@ -956,6 +1216,20 @@ static void emit_text(Obj *prog) {
     println("  mov fp, sp");
     if (fn->stack_size > 0)
       add_imm("sp", "sp", -fn->stack_size);
+
+    // kscc: só funções que usam alloca/VLA precisam do alloca_bottom.
+    if (fn->uses_alloca)
+      store_fp_slot("sp", fn->alloca_bottom->offset, "r5");
+
+    // kscc: base da área de locais com alinhamento > 4.
+    if (fn->align_max) {
+      add_imm("r5", "fp", -fn->align_top);
+      if (is_imm14(-fn->align_max))
+        println("  andi r5, r5, %d", -fn->align_max);
+      else
+        println("  andl r5, r5, %d", -fn->align_max);
+      store_fp_slot("r5", fn->align_base_offset, "r6");
+    }
 
     // Save passed-by-register arguments to the stack
     int gp = 0;
@@ -1008,6 +1282,46 @@ static void mangle_static_symbols(Obj *prog) {
     }
 }
 
+// kscc: o ksas só aceita identificadores [A-Za-z_][A-Za-z0-9_.]*, mas C
+// aceita UCNs e UTF-8 em nomes (`int π;`) e o chibicc também '$'. Cada
+// byte fora de [A-Za-z0-9_] vira ".xx" (hex), com "_" na frente se o
+// primeiro caractere for escapado: `π` -> `_.cf.80`. Como nenhum nome C
+// contém '.', o resultado não colide com outros símbolos, e todas as
+// unidades escapam o mesmo nome do mesmo jeito. Roda depois de
+// mangle_static_symbols (que trata nomes com '.' como anônimos).
+static bool is_asm_ident_byte(unsigned char c) {
+  return isalnum(c) || c == '_';
+}
+
+static void escape_symbol_names(Obj *prog) {
+  for (Obj *var = prog; var; var = var->next) {
+    char *name = var->name;
+    if (strchr(name, '.'))
+      continue; // anônimo (L<id>..N), já válido
+
+    bool ok = true;
+    for (char *p = name; *p; p++)
+      if (!is_asm_ident_byte(*p))
+        ok = false;
+    if (ok)
+      continue;
+
+    char *buf;
+    size_t buflen;
+    FILE *out = open_memstream(&buf, &buflen);
+    if (!is_asm_ident_byte(*name) || isdigit((unsigned char)*name))
+      fputc('_', out);
+    for (unsigned char *p = (unsigned char *)name; *p; p++) {
+      if (is_asm_ident_byte(*p))
+        fputc(*p, out);
+      else
+        fprintf(out, ".%02x", *p);
+    }
+    fclose(out);
+    var->name = buf;
+  }
+}
+
 void codegen(Obj *prog, FILE *out) {
   output_file = out;
   L = format("L%s", unit_id);
@@ -1020,6 +1334,7 @@ void codegen(Obj *prog, FILE *out) {
   println("  .text");
 
   mangle_static_symbols(prog);
+  escape_symbol_names(prog);
   assign_lvar_offsets(prog);
   emit_data(prog);
   emit_text(prog);

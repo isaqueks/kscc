@@ -6,6 +6,7 @@
 //
 //     crt0.ksasm + .kso do usuário (na ordem da linha de comando)
 //                + runtime (lib/libks.kso; até a fase 4, lib/minirt.ksasm)
+//                + símbolos comuns sem definição (ver resolve_commons)
 //                + rodapé (.entry _start / .stack N)
 //
 // em um único .ksasm montado pelo ksas. Os erros do ksas, que se referem
@@ -227,6 +228,116 @@ void ks_check_unit(LinkOptions *o, char *path, char *display) {
   }
 }
 
+// Símbolos comuns (definições provisórias, `int x;`). O ksas não tem
+// .comm, então o codegen emite em cada unidade uma linha
+//
+//     ; kscc-common: nome tamanho alinhamento
+//
+// que o ksas ignora (é comentário). Aqui juntamos as de todos os trechos:
+// se algum trecho define o label `nome:` (uma definição com
+// inicializador, ou assembly escrito à mão), o símbolo comum some, como
+// no linker do Unix; senão é criado um único .bss com o maior tamanho e o
+// maior alinhamento pedidos.
+typedef struct Common Common;
+struct Common {
+  Common *next;
+  char *name;
+  int size;
+  int align;
+};
+
+#define COMMON_MARK "; kscc-common:"
+
+// Nome do label definido na linha (`nome:` no começo, depois de
+// espaços), ou NULL.
+static char *line_label(char *p, char *end, int *len) {
+  while (p < end && (*p == ' ' || *p == '\t'))
+    p++;
+  char *q = p;
+  while (q < end && (isalnum((unsigned char)*q) || *q == '_' || *q == '.' || *q == '$'))
+    q++;
+  if (q == p || q >= end || *q != ':')
+    return NULL;
+  *len = q - p;
+  return p;
+}
+
+static void scan_commons(char *text, Common **list, HashMap *commons) {
+  int mlen = strlen(COMMON_MARK);
+  for (char *p = text; *p;) {
+    char *end = strchr(p, '\n');
+    if (!end)
+      end = p + strlen(p);
+
+    if (!strncmp(p, COMMON_MARK, mlen)) {
+      char name[512];
+      int size, align;
+      if (sscanf(p + mlen, "%511s %d %d", name, &size, &align) != 3)
+        error("marcador de simbolo comum invalido: %.*s", (int)(end - p), p);
+
+      Common *c = hashmap_get(commons, name);
+      if (!c) {
+        c = calloc(1, sizeof(Common));
+        c->name = strdup(name);
+        c->next = *list;
+        *list = c;
+        hashmap_put(commons, c->name, c);
+      }
+      c->size = MAX(c->size, size);
+      c->align = MAX(c->align, align);
+    }
+
+    p = *end ? end + 1 : end;
+  }
+}
+
+static void scan_definitions(char *text, HashMap *commons, HashMap *defined) {
+  for (char *p = text; *p;) {
+    char *end = strchr(p, '\n');
+    if (!end)
+      end = p + strlen(p);
+
+    int len;
+    char *name = line_label(p, end, &len);
+    if (name && hashmap_get2(commons, name, len))
+      hashmap_put2(defined, name, len, (void *)1);
+
+    p = *end ? end + 1 : end;
+  }
+}
+
+// Devolve o texto .ksasm com as definições dos símbolos comuns que nenhum
+// trecho define (ou "" se não há).
+static char *resolve_commons(char **texts, int ntexts) {
+  Common *list = NULL;
+  HashMap commons = {0};
+  for (int i = 0; i < ntexts; i++)
+    scan_commons(texts[i], &list, &commons);
+  if (!list)
+    return "";
+
+  HashMap defined = {0};
+  for (int i = 0; i < ntexts; i++)
+    scan_definitions(texts[i], &commons, &defined);
+
+  char *buf;
+  size_t buflen;
+  FILE *out = open_memstream(&buf, &buflen);
+  for (Common *c = list; c; c = c->next) {
+    if (hashmap_get(&defined, c->name))
+      continue;
+    fprintf(out, "\t.bss\n");
+    if (c->align > 1)
+      fprintf(out, "\t.align\t%d\n", c->align);
+    fprintf(out, "\t.global\t%s\n%s:\n", c->name, c->name);
+    if (c->size > 0)
+      fprintf(out, "\t.space\t%d\n", c->size);
+  }
+  fprintf(out, "\t.text\n");
+  fclose(out);
+  return buf;
+}
+
 void ks_link(LinkOptions *o, StringArray *inputs, StringArray *names, char *output) {
   char *crt0 = format("%s/lib/crt0.ksasm", o->prefix);
   char *libks = format("%s/lib/libks.kso", o->prefix);
@@ -254,24 +365,39 @@ void ks_link(LinkOptions *o, StringArray *inputs, StringArray *names, char *outp
   PartArray parts = {0};
   int line = 1;
 
-  fprintf(out, "; kscc: programa ligado (concatenacao, doc 04 §3)\n");
-  line++;
+  // Trechos na ordem da concatenação.
+  int ntexts = 0;
+  char **texts = calloc(inputs->len + 2, sizeof(char *));
+  char **tnames = calloc(inputs->len + 2, sizeof(char *));
 
   if (!o->nostdlib) {
     if (!file_exists(crt0))
       error("crt0 nao encontrado: %s (use KSCC_PREFIX ou -nostdlib)", crt0);
-    add_part(out, &parts, &line, crt0, must_slurp(crt0, crt0));
+    tnames[ntexts] = crt0;
+    texts[ntexts++] = must_slurp(crt0, crt0);
   }
 
-  for (int i = 0; i < inputs->len; i++)
-    add_part(out, &parts, &line, names->data[i],
-             must_slurp(inputs->data[i], names->data[i]));
+  for (int i = 0; i < inputs->len; i++) {
+    tnames[ntexts] = names->data[i];
+    texts[ntexts++] = must_slurp(inputs->data[i], names->data[i]);
+  }
 
   if (!o->nostdlib) {
     if (!file_exists(runtime))
       error("runtime nao encontrado: %s", runtime);
-    add_part(out, &parts, &line, runtime, must_slurp(runtime, runtime));
+    tnames[ntexts] = runtime;
+    texts[ntexts++] = must_slurp(runtime, runtime);
   }
+
+  fprintf(out, "; kscc: programa ligado (concatenacao, doc 04 §3)\n");
+  line++;
+
+  for (int i = 0; i < ntexts; i++)
+    add_part(out, &parts, &line, tnames[i], texts[i]);
+
+  char *commons = resolve_commons(texts, ntexts);
+  if (*commons)
+    add_part(out, &parts, &line, "<simbolos comuns>", commons);
 
   add_part(out, &parts, &line, "<rodape do link>",
            format("\t.entry\t_start\n\t.stack\t%d\n", o->stack_size));

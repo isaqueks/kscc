@@ -474,7 +474,8 @@ check -MD
 grep -q -z '^md3.kso:.* md3\.c .* ./out3\.h' $tmp/md3.d
 check -MD
 
-$kscc -c -MD -MF $tmp/md-mf.d -I. $tmp/md2.c
+# kscc: dentro de $tmp (o chibicc gravava md2.o no diretório corrente)
+(cd $tmp; $OLDPWD/$kscc -c -MD -MF $tmp/md-mf.d -I. $tmp/md2.c)
 grep -q -z '^md2.kso:.*md2\.c .*/out2\.h' $tmp/md-mf.d
 check -MD
 

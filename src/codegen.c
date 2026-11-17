@@ -1315,11 +1315,47 @@ static bool is_asm_ident_byte(unsigned char c) {
   return isalnum(c) || c == '_';
 }
 
+// kscc: o ksas lê como registrador, sem diferenciar maiúsculas, zr, fp,
+// sp, r0-r31 e os apelidos a0-a3, t0-t10, s0-s13 (ksas_reg_parse); um
+// global C com esse nome (`int fp;`, `int s1;`) não pode virar label.
+// Esses nomes ganham um '.' no fim (`fp` -> `fp.`), que o escape em
+// hexadecimal nunca produz (ele sempre põe dois dígitos depois do '.').
+static bool is_ksas_register(char *name) {
+  char lc[4];
+  int n = strlen(name);
+  if (n < 2 || n > 3)
+    return false;
+  for (int i = 0; i <= n; i++)
+    lc[i] = tolower((unsigned char)name[i]);
+
+  if (!strcmp(lc, "zr") || !strcmp(lc, "fp") || !strcmp(lc, "sp"))
+    return true;
+
+  // Uma ou duas casas decimais, sem zero à esquerda ("r01" não é).
+  if (!isdigit((unsigned char)lc[1]) ||
+      (n == 3 && (!isdigit((unsigned char)lc[2]) || lc[1] == '0')))
+    return false;
+
+  int v = atoi(lc + 1);
+  switch (lc[0]) {
+  case 'r': return v < 32;
+  case 'a': return v < 4;
+  case 't': return v < 11;
+  case 's': return v < 14;
+  }
+  return false;
+}
+
 static void escape_symbol_names(Obj *prog) {
   for (Obj *var = prog; var; var = var->next) {
     char *name = var->name;
     if (strchr(name, '.'))
       continue; // anônimo (L<id>..N), já válido
+
+    if (is_ksas_register(name)) {
+      var->name = format("%s.", name);
+      continue;
+    }
 
     bool ok = true;
     for (char *p = name; *p; p++)

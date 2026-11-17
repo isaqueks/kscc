@@ -3490,10 +3490,22 @@ static void scan_globals(void) {
     }
 
     // Find another definition of the same identifier.
+    //
+    // kscc: entre várias definições provisórias do mesmo nome (`int x;
+    // int x;`) uma tem de ficar; o chibicc descartava todas e o símbolo
+    // ficava indefinido. Fica a primeira da lista (a última declarada);
+    // as outras provisórias só a tornam redundante se vierem antes dela.
+    bool before = true;
     Obj *var2 = globals;
-    for (; var2; var2 = var2->next)
-      if (var != var2 && var2->is_definition && !strcmp(var->name, var2->name))
+    for (; var2; var2 = var2->next) {
+      if (var2 == var) {
+        before = false;
+        continue;
+      }
+      if (var2->is_definition && !strcmp(var->name, var2->name) &&
+          (!var2->is_tentative || before))
         break;
+    }
 
     // If there's another definition, the tentative definition
     // is redundant

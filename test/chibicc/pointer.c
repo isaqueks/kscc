@@ -39,6 +39,6 @@ int main() {
   ASSERT(4, ({ int x[2][3]; int *y=x; y[4]=4; x[1][1]; }));
   ASSERT(5, ({ int x[2][3]; int *y=x; y[5]=5; x[1][2]; }));
 
-  kscc_ok(); // kscc: printf só na fase 4 (libks)
+  printf("OK\n");
   return 0;
 }

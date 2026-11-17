@@ -20,6 +20,6 @@ int main() {
   extern int ext_fn2(int x);
   ASSERT(8, ext_fn2(8));
 
-  kscc_ok(); // kscc: printf só na fase 4 (libks)
+  printf("OK\n");
   return 0;
 }

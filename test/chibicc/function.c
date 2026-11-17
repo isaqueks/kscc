@@ -78,7 +78,6 @@ short sshort_fn();
 
 int add_all(int n, ...);
 
-#ifdef KSCC_PHASE4 // kscc: vsprintf só com a libks (fase 4)
 // kscc: va_list da KSVM (char*, doc 02 §3.2) no lugar do __va_elem e do
 // __va_area__ do x86-64.
 typedef char *va_list;
@@ -91,7 +90,6 @@ char *fmt(char *buf, char *fmt, ...) {
   va_list ap = (char *)&fmt + sizeof(fmt); // kscc: va_start da KSVM
   vsprintf(buf, fmt, ap);
 }
-#endif
 
 #ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
 double add_double(double x, double y);
@@ -272,13 +270,11 @@ int main() {
   ASSERT(6, add_all(3,1,2,3));
   ASSERT(5, add_all(4,1,2,3,-1));
 
-#ifdef KSCC_PHASE4 // kscc: printf/sprintf só com a libks (fase 4)
   { char buf[100]; fmt(buf, "%d %d %s", 1, 2, "foo"); printf("%s\n", buf); }
 
   ASSERT(0, ({ char buf[100]; sprintf(buf, "%d %d %s", 1, 2, "foo"); strcmp("1 2 foo", buf); }));
 
   ASSERT(0, ({ char buf[100]; fmt(buf, "%d %d %s", 1, 2, "foo"); strcmp("1 2 foo", buf); }));
-#endif
 
   ASSERT(251, uchar_fn());
   ASSERT(65528, ushort_fn());
@@ -422,5 +418,5 @@ int main() {
   ASSERT(0, to_ldouble(5.0) == 5.2);
 #endif
 
-  kscc_ok(); // kscc: printf só na fase 4 (libks)
+  printf("OK\n");
 }

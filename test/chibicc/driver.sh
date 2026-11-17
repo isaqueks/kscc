@@ -177,6 +177,65 @@ echo 'int ks_put_str(); int main() { return ks_put_str(); }' > $tmp/ns4.c
 $kscc -nostdlib -o $tmp/foo $tmp/myrt.ksasm $tmp/ns4.c 2>&1 | grep -q "referencia indefinida a 'ks_put_str'"
 check '-nostdlib sem runtime'
 
+# libks (fase 4): ligada por padrão, só com o que o programa usa
+echo '#include <stdio.h>
+int main() { printf("%d-%s\n", 42, "ok"); return 3; }' > $tmp/lk.c
+$kscc -o $tmp/foo $tmp/lk.c
+[ "$($KSVM $tmp/foo)" = 42-ok ]
+check 'libks: printf'
+$KSVM $tmp/foo > /dev/null
+[ "$?" = 3 ]
+check 'libks: codigo de saida de main via exit'
+
+# -Wl,--no-gc-sections liga a libks inteira: mesma saída, imagem maior
+$kscc -Wl,--no-gc-sections -o $tmp/full $tmp/lk.c
+[ "$($KSVM $tmp/full)" = 42-ok ]
+check '-Wl,--no-gc-sections'
+[ $(wc -c < $tmp/full) -gt $(wc -c < $tmp/foo) ]
+check '-Wl,--no-gc-sections (imagem maior)'
+$kscc -Wl,--no-gc-sections,--gc-sections -o $tmp/foo2 $tmp/lk.c
+cmp -s $tmp/foo $tmp/foo2
+check '-Wl,--gc-sections (ultima vence)'
+
+# Função do usuário com nome da libks vence (como num .a do Unix), e a da
+# libks não entra (senão o ksas acusaria label duplicado)
+echo '#include <string.h>
+size_t strlen(const char *s) { return 99; }
+int main() { return strlen("abc"); }' > $tmp/own.c
+$kscc -o $tmp/foo $tmp/own.c
+$KSVM $tmp/foo
+[ "$?" = 99 ]
+check 'libks: definicao do usuario vence'
+
+# ... inclusive quando outra função da libks a usa (strdup chama strlen)
+echo '#include <string.h>
+#include <stdlib.h>
+static int calls;
+size_t strlen(const char *s) { size_t n = 0; calls++; while (s[n]) n++; return n; }
+int main() { char *p = strdup("abc"); return calls == 1 && !strcmp(p, "abc") ? 0 : 1; }' > $tmp/own2.c
+$kscc -o $tmp/foo $tmp/own2.c
+$KSVM $tmp/foo
+[ "$?" = 0 ]
+check 'libks: definicao do usuario usada pela libks'
+
+# Símbolo comum da libks (ks_errno) junta-se ao do usuário
+grep -q '^; kscc-common: ks_errno 4 4$' $(dirname $kscc)/libks/libks.kso
+check 'libks.kso mantem o marcador de simbolo comum'
+echo '#include <errno.h>
+#include <ksvm/gpio.h>
+int ks_errno;
+int main() { return ks_pin_mode(13, 1) == -1 && errno == ENOSYS ? 0 : 1; }' > $tmp/cm.c
+$kscc -o $tmp/foo $tmp/cm.c
+$KSVM $tmp/foo
+check 'libks: simbolo comum compartilhado com o usuario'
+
+# Sem a libks: mensagem clara
+echo 'int main() { return 0; }' > $tmp/nolib.c
+! KSCC_LIBDIR=$tmp/nada $kscc -o $tmp/foo $tmp/nolib.c 2> $tmp/err
+check 'libks ausente'
+grep -q 'libks nao encontrada' $tmp/err
+check 'libks ausente (mensagem)'
+
 # -Wl,--stack=N
 echo 'int f(int n) { int a[100]; a[0] = n; return n ? f(n - 1) + 1 : a[0]; } int main() { return f(50); }' > $tmp/stk.c
 $kscc -o $tmp/foo $tmp/stk.c
@@ -323,8 +382,9 @@ check -idirafter
 echo foo > $tmp/out.h
 echo bar | $kscc -include $tmp/out.h -E -o- -xc - | grep -q -z 'foo.*bar'
 check -include
-# kscc: stddef.h do kscc no lugar do stdio.h do sistema (sem libc até a fase 4)
-echo NULL | $kscc -Iinclude -include stddef.h -E -o- -xc - | grep -q 0
+# kscc: stdio.h da libks (sem -Iinclude: o driver já procura nos headers
+# da libks e do compilador)
+echo NULL | $kscc -include stdio.h -E -o- -xc - | grep -q 0
 check -include
 
 # -x

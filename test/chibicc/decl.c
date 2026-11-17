@@ -19,6 +19,6 @@ int main() {
   ASSERT(1, (_Bool)2);
   ASSERT(0, (_Bool)(char)256);
 
-  kscc_ok(); // kscc: printf só na fase 4 (libks)
+  printf("OK\n");
   return 0;
 }

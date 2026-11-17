@@ -399,22 +399,18 @@ int main() {
   ASSERT(0, strcmp(__BASE_FILE__, "test/chibicc/macro.c")); // kscc: idem
 
 #define M30(buf, fmt, ...) sprintf(buf, fmt __VA_OPT__(,) __VA_ARGS__)
-#ifdef KSCC_PHASE4 // kscc: sprintf só com a libks (fase 4)
   ASSERT(0, ({ char buf[100]; M30(buf, "foo"); strcmp(buf, "foo"); }));
   ASSERT(0, ({ char buf[100]; M30(buf, "foo%d", 3); strcmp(buf, "foo3"); }));
   ASSERT(0, ({ char buf[100]; M30(buf, "foo%d%d", 3, 5); strcmp(buf, "foo35"); }));
-#endif
 
 #define M31(buf, fmt, ...) sprintf(buf, fmt, ## __VA_ARGS__)
-#ifdef KSCC_PHASE4 // kscc: sprintf só com a libks (fase 4)
   ASSERT(0, ({ char buf[100]; M31(buf, "foo"); strcmp(buf, "foo"); }));
   ASSERT(0, ({ char buf[100]; M31(buf, "foo%d", 3); strcmp(buf, "foo3"); }));
   ASSERT(0, ({ char buf[100]; M31(buf, "foo%d%d", 3, 5); strcmp(buf, "foo35"); }));
-#endif
 
 #define M31(x, y) (1, ##x y)
   ASSERT(3, M31(, 3));
 
-  kscc_ok(); // kscc: printf só na fase 4 (libks)
+  printf("OK\n");
   return 0;
 }

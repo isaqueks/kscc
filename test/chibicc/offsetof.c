@@ -18,6 +18,6 @@ int main() {
   ASSERT(12, offsetof(T, d)); // kscc: double tem alinhamento 4 (doc 02 §1)
 #endif
 
-  kscc_ok(); // kscc: printf só na fase 4 (libks)
+  printf("OK\n");
   return 0;
 }

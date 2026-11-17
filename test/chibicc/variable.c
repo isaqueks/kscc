@@ -67,6 +67,6 @@ int main() {
 
   ASSERT(3, g3);
 
-  kscc_ok(); // kscc: printf só na fase 4 (libks)
+  printf("OK\n");
   return 0;
 }

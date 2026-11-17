@@ -21,6 +21,6 @@ int main() {
 
   ASSERT(10, ({ int n=5; sizeof(char[2][n]); }));
 
-  kscc_ok(); // kscc: printf só na fase 4 (libks)
+  printf("OK\n");
   return 0;
 }

@@ -1,99 +1,25 @@
-// kscc: substitui test/chibicc/common (que usava printf/stdio/stdlib da
-// glibc). Até a libks (fase 4), assert() imprime com ks_sys_puts e converte
-// inteiros para decimal em C puro; printf fica de fora (os testes chamam
-// kscc_ok() no lugar de printf("OK\n")). As funções auxiliares que dependem
-// de ponto flutuante ficam atrás de KSCC_HAS_FLOAT.
+// kscc: test/chibicc/common (o "common" do chibicc), agora sobre a libks
+// (doc 05 §4). As funções de <string.h> e exit que esta unidade definia
+// até a fase 3 vêm da libks. As funções auxiliares que dependem de ponto
+// flutuante ficam atrás de KSCC_HAS_FLOAT.
+#include <stdio.h>
+#include <stdlib.h>
 
-int ks_sys_puts(const char *p, int len);
-void ks_sys_exit(int code);
-
-static int str_len(const char *s) {
-  int n = 0;
-  while (s[n])
-    n++;
-  return n;
-}
-
-static void put_str(const char *s) {
-  ks_sys_puts(s, str_len(s));
-}
-
-static void put_int(int v) {
-  char buf[12];
-  int i = 12;
-  unsigned u = v < 0 ? -(unsigned)v : (unsigned)v;
-  do {
-    buf[--i] = '0' + u % 10;
-    u /= 10;
-  } while (u);
-  if (v < 0)
-    buf[--i] = '-';
-  ks_sys_puts(buf + i, 12 - i);
-}
-
-void assert(int expected, int actual, char *code) {
-  put_str(code);
-  put_str(" => ");
+// Verificação usada pelo ASSERT de test.h: imprime
+// "código => valor", ou "código => esperado expected but got obtido" e
+// sai com 1 na falha.
+void assert_eq(int expected, int actual, const char *code) {
   if (expected == actual) {
-    put_int(actual);
-    put_str("\n");
+    printf("%s => %d\n", code, actual);
   } else {
-    put_int(expected);
-    put_str(" expected but got ");
-    put_int(actual);
-    put_str("\n");
-    ks_sys_exit(1);
+    printf("%s => %d expected but got %d\n", code, expected, actual);
+    exit(1);
   }
 }
 
-void kscc_ok(void) {
-  put_str("OK\n");
-}
-
-void exit(int n) {
-  ks_sys_exit(n);
-}
-
-// Subconjunto de <string.h> usado pelos testes (a libks real é a fase 4).
-int strcmp(char *p, char *q) {
-  while (*p && *p == *q)
-    p++, q++;
-  return (unsigned char)*p - (unsigned char)*q;
-}
-
-int strncmp(char *p, char *q, long n) {
-  for (; n > 0; n--, p++, q++) {
-    if (*p != *q)
-      return (unsigned char)*p - (unsigned char)*q;
-    if (!*p)
-      return 0;
-  }
-  return 0;
-}
-
-int memcmp(char *p, char *q, long n) {
-  for (; n > 0; n--, p++, q++)
-    if (*p != *q)
-      return (unsigned char)*p - (unsigned char)*q;
-  return 0;
-}
-
-long strlen(char *s) {
-  return str_len(s);
-}
-
-void *memcpy(void *dest, void *src, long n) {
-  char *d = dest, *s = src;
-  while (n-- > 0)
-    *d++ = *s++;
-  return dest;
-}
-
-void *memset(void *s, int c, long n) {
-  char *p = s;
-  while (n-- > 0)
-    *p++ = c;
-  return s;
+// O nome do chibicc, que literal.c ainda chama diretamente.
+void assert(int expected, int actual, char *code) {
+  assert_eq(expected, actual, code);
 }
 
 static int static_fn() { return 5; }

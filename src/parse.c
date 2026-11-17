@@ -1490,6 +1490,18 @@ static void write_buf(char *buf, uint64_t val, int sz) {
     unreachable();
 }
 
+// kscc: grava o valor de `expr` no bitfield `mem` da struct em `base`.
+static void write_bitfield(char *base, Member *mem, Node *expr) {
+  char *loc = base + mem->offset;
+  uint64_t oldval = read_buf(loc, mem->ty->size);
+  uint64_t newval = eval(expr);
+  if (mem->ty->kind == TY_BOOL)
+    newval = newval != 0;
+  uint64_t mask = ((uint64_t)1 << mem->bit_width) - 1;
+  uint64_t combined = oldval | ((newval & mask) << mem->bit_offset);
+  write_buf(loc, combined, mem->ty->size);
+}
+
 static Relocation *
 write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int offset) {
   // kscc: `struct T g = outra;` em escopo de arquivo não é constante; o
@@ -1507,18 +1519,12 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
   if (ty->kind == TY_STRUCT) {
     for (Member *mem = ty->members; mem; mem = mem->next) {
       if (mem->is_bitfield) {
-        if (!mem->name) // kscc: bitfield sem nome não é inicializado
-          continue;
-        Node *expr = init->children[mem->idx]->expr;
-        if (!expr)
-          break;
-
-        char *loc = buf + offset + mem->offset;
-        uint64_t oldval = read_buf(loc, mem->ty->size);
-        uint64_t newval = eval(expr);
-        uint64_t mask = (1L << mem->bit_width) - 1;
-        uint64_t combined = oldval | ((newval & mask) << mem->bit_offset);
-        write_buf(loc, combined, mem->ty->size);
+        // kscc: um campo sem inicializador (ou sem nome) não encerra a
+        // struct: o chibicc fazia `break` e, em `{ .c = 1, .a = 2 }`, os
+        // campos depois do primeiro não inicializado ficavam zerados.
+        Node *expr = mem->name ? init->children[mem->idx]->expr : NULL;
+        if (expr)
+          write_bitfield(buf + offset, mem, expr);
       } else {
         cur = write_gvar_data(cur, init->children[mem->idx], mem->ty, buf,
                               offset + mem->offset);
@@ -1530,6 +1536,13 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
   if (ty->kind == TY_UNION) {
     if (!init->mem)
       return cur;
+    // kscc: membro bitfield de union também é mascarado.
+    if (init->mem->is_bitfield) {
+      Node *expr = init->children[init->mem->idx]->expr;
+      if (expr)
+        write_bitfield(buf + offset, init->mem, expr);
+      return cur;
+    }
     return write_gvar_data(cur, init->children[init->mem->idx],
                            init->mem->ty, buf, offset);
   }
@@ -1550,10 +1563,22 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
   char **label = NULL;
   uint64_t val = eval2(init->expr, &label);
 
+  // kscc: a conversão implícita para o tipo do objeto (C11 6.7.9p11) não
+  // aparece na árvore: para _Bool é != 0 (`_Bool b = 5;` gravava 5), e
+  // um endereço só cabe num objeto do tamanho de um ponteiro (o .word de
+  // 4 bytes sobrescrevia os vizinhos de um char ou short).
+  if (ty->kind == TY_BOOL) {
+    write_buf(buf + offset, label || val != 0, 1);
+    return cur;
+  }
+
   if (!label) {
     write_buf(buf + offset, val, ty->size);
     return cur;
   }
+
+  if (ty->size != 4)
+    error_tok(init->expr->tok, "initializer element is not constant");
 
   Relocation *rel = calloc(1, sizeof(Relocation));
   rel->offset = offset;
@@ -1971,7 +1996,21 @@ static int64_t eval_div(Node *node, bool is_mod) {
 // expression for a global variable.
 static int64_t eval2(Node *node, char ***label) {
   add_type(node);
-  return wrap_to_type(node->ty, eval2_raw(node, label));
+  int64_t val = eval2_raw(node, label);
+
+  // kscc: um endereço (label + deslocamento) convertido para _Bool vale 1
+  // (endereço de objeto nunca é nulo); para um inteiro menor que um
+  // ponteiro não é constante: o .word do link não cabe nele. Antes,
+  // (_Bool)&x e (char)&x ficavam com o label e viravam `.word x`.
+  if (node->kind == ND_CAST && label && *label) {
+    if (node->ty->kind == TY_BOOL) {
+      *label = NULL;
+      return 1;
+    }
+    if (node->ty->size != 4)
+      error_tok(node->tok, "initializer element is not constant");
+  }
+  return wrap_to_type(node->ty, val);
 }
 
 // kscc: soma, subtração, multiplicação e negação em uint64_t para que o

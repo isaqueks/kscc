@@ -2569,8 +2569,15 @@ static Node *cast(Token **rest, Token *tok) {
 //       | "&&" ident
 //       | postfix
 static Node *unary(Token **rest, Token *tok) {
-  if (equal(tok, "+"))
-    return cast(rest, tok->next);
+  // kscc: + unário aplica a promoção inteira (C11 6.5.3.3p2), que o
+  // chibicc omitia: sizeof(+c) é 4 para char c.
+  if (equal(tok, "+")) {
+    Node *node = cast(rest, tok->next);
+    add_type(node);
+    if (is_integer(node->ty) && node->ty->size < 4)
+      return new_cast(node, ty_int);
+    return node;
+  }
 
   if (equal(tok, "-"))
     return new_unary(ND_NEG, cast(rest, tok->next), tok);

@@ -20,13 +20,13 @@ chibicc e para programas úteis em microcontroladores. Não é POSIX e não fing
 | `ctype.h` | `isdigit isalpha isalnum isspace isupper islower toupper tolower isxdigit isprint` | tabela de 128 bytes em `.rodata` |
 | `stdlib.h` | `abs labs atoi atol strtol strtoul rand srand exit abort qsort bsearch malloc calloc realloc free` | `exit` chama `atexit` (até 8 handlers) e `ks_sys_exit` |
 | `stdio.h` | `putchar getchar puts gets_s fputs printf sprintf snprintf vprintf vsprintf vsnprintf fprintf(stdout/stderr) fflush` | `printf` suporta `%d %i %u %x %X %o %c %s %p %%`, flags `- 0 +`, largura, precisão, `l` (igual a `int`), `h`, `hh`, `z`; **sem** `%f` até a fase 6, **sem** `%lld` até a fase 5. Saída bufferizada em 128 bytes, descarregada em `\n`, `fflush` e `exit` |
-| `assert.h` | `assert(x)` → mensagem `arquivo:linha: assert(x) falhou` + `abort` | |
+| `assert.h` | `assert(x)` → mensagem `arquivo:linha: assert(x) falhou` + saída com código 1 (sem `atexit`). `abort()` continua sendo `trap 1` (fault TRAP, código 78 no runner) | |
 | `errno.h` | `errno` (= `ks_errno`), `ENOSYS EINVAL EIO EAGAIN ENOMEM` mapeados dos `KSVM_ERR_*` | |
 | `stdarg.h` | `va_list va_start va_arg va_end va_copy` | `va_list` = `char*`; `va_start` é builtin do compilador (doc 03) |
 | `stddef.h` `stdint.h` `stdbool.h` `limits.h` `stdalign.h` `stdnoreturn.h` `iso646.h` | tipos e constantes ILP32 | `int64_t` só na fase 5 |
 | `ksvm/syscall.h` | protótipos das `ks_sys_*` + `struct ks_mem_info` | específico da KSVM |
 | `ksvm/time.h` | `ks_millis`, `ks_sleep_ms` | |
-| `ksvm/gpio.h` | `ks_pin_mode`, `ks_pin_write`, `ks_pin_read`, `ks_analog_read`, `ks_pwm_write` | retornam −1 se a HAL não suporta (`CAPS`) |
+| `ksvm/gpio.h` | `ks_pin_mode`, `ks_pin_write`, `ks_pin_read`, `ks_analog_read`, `ks_pwm_write` | `static inline`; retornam −1 com `errno = ENOSYS` se a HAL não implementa a syscall (`CAPS` da ksvm2 não enxerga o grupo 4, que é repassado à HAL, então não é consultado) |
 
 Fora: `FILE*` genérico, `fopen` (grupo 3 pode ganhar um `ks_fopen` só no desktop), `time.h`
 de calendário, locale, `setjmp` (possível em assembly: salvar `fp`, `sp`, endereço de retorno;
@@ -53,7 +53,8 @@ heap_start ──► [cabeçalho][bloco][cabeçalho][bloco] … ──► brk �
 ## 5. Build
 
 `libks/Makefile`: compila cada `.c` com `kscc -c` → `.kso`, concatena com os `.ksasm` em
-`lib/libks.kso`, copia headers para `include/`. Depende do `kscc` já construído; o `make` do
+`build/libks/libks.kso` (ao lado do `kscc` que a compilou; `build/asan/libks/` no ASan). Os
+headers ficam em `libks/include/`, procurados pelo driver após `-I`. Depende do `kscc` já construído; o `make` do
 projeto constrói o compilador primeiro. A `libks` é recompilada toda vez que o compilador muda,
 o que a transforma em teste de regressão permanente de ~2.000 linhas de C real.
 

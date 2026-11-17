@@ -1,9 +1,10 @@
 #!/bin/bash
 # kscc: driver.sh do chibicc adaptado ao kscc (doc 06 §2). Saem os testes
 # de recursos do linker do host (.a, .so, -fPIC, -static, -shared, -L, -l,
-# -Wl, de ld, -Xlinker) e de .comm (-fcommon), que não existem na KSVM;
-# entram -###, -nostdlib, -Wl,--stack, arquivo inexistente, prefixo de
-# símbolos static entre unidades e referência indefinida.
+# -Wl, de ld, -Xlinker), que não existem na KSVM; entram -###,
+# -nostdlib, -Wl,--stack, arquivo inexistente, prefixo de símbolos static
+# entre unidades, símbolos comuns (o ksas não tem .comm: o link do kscc
+# deduplica) e referência indefinida.
 kscc=$1
 KSVM=${KSVM:-${KSVM2_HOME:-../ksvm2}/build/tools/ksvm}
 
@@ -89,6 +90,51 @@ $KSVM $tmp/foo
 [ "$?" = 33 ]
 check 'static em duas unidades'
 
+# static de mesmo nome em três unidades, inclusive static local e unidades
+# compiladas antes com -c
+echo 'static int n; int inc1() { static int c; return ++c + ++n; }' > $tmp/st1.c
+echo 'static int n; int inc2() { static int c; c += 10; return c + (n += 100); }' > $tmp/st2.c
+echo 'int inc1(); int inc2(); static int n = 1000; int main() { inc1(); inc2(); return (inc1() + inc2() + n) % 251; }' > $tmp/st3.c
+$kscc -c -o $tmp/st1.kso $tmp/st1.c && $kscc -c -o $tmp/st2.kso $tmp/st2.c &&
+  $kscc -o $tmp/foo $tmp/st1.kso $tmp/st2.kso $tmp/st3.c
+$KSVM $tmp/foo
+[ "$?" = $(( (4 + 220 + 1000) % 251 )) ]
+check 'static de mesmo nome em tres unidades'
+
+# Símbolos comuns: `int c;` em várias unidades vira um único .bss; uma
+# definição com valor vence as provisórias; o tamanho é o maior.
+echo 'int c; int arr[2]; int strong; void set1() { c = 1; arr[1] = 2; }' > $tmp/cm1.c
+echo 'int c; int arr[8]; int strong = 40; void set2() { c += 10; arr[7] = 3; }' > $tmp/cm2.c
+echo 'extern int c, arr[], strong; void set1(); void set2(); int main() { set1(); set2(); return c + arr[1] + arr[7] + strong; }' > $tmp/cm3.c
+$kscc -o $tmp/foo $tmp/cm1.c $tmp/cm2.c $tmp/cm3.c
+$KSVM $tmp/foo
+[ "$?" = 56 ]
+check 'simbolos comuns entre unidades'
+
+$kscc -c -o $tmp/cm1.kso $tmp/cm1.c && $kscc -c -o $tmp/cm2.kso $tmp/cm2.c &&
+  $kscc -o $tmp/foo $tmp/cm1.kso $tmp/cm2.kso $tmp/cm3.c
+$KSVM $tmp/foo
+[ "$?" = 56 ]
+check 'simbolos comuns em .kso'
+
+$kscc -S -o- $tmp/cm1.c | grep -q '^; kscc-common: c 4 4$'
+check 'marcador de simbolo comum'
+
+# -fno-common: definições provisórias viram .bss próprios, e duas
+# unidades com `int c;` colidem no ksas.
+! $kscc -fno-common -o $tmp/foo $tmp/cm1.c $tmp/cm2.c $tmp/cm3.c 2> $tmp/err
+check '-fno-common (duplicado)'
+$kscc -fno-common -S -o- $tmp/cm1.c | grep -q '^c:$'
+check '-fno-common (.bss)'
+
+# Nomes não ASCII entre unidades (escapados igualmente nas duas)
+printf 'int \xcf\x80 = 3;\n' > $tmp/u1.c
+printf 'extern int \xcf\x80; int main() { return \xcf\x80; }\n' > $tmp/u2.c
+$kscc -o $tmp/foo $tmp/u1.c $tmp/u2.c
+$KSVM $tmp/foo
+[ "$?" = 3 ]
+check 'identificador nao ASCII entre unidades'
+
 # Referência indefinida
 echo 'int nada(); int main() { return nada(); }' > $tmp/undef.c
 $kscc -o $tmp/foo $tmp/undef.c 2>&1 | grep -q "referencia indefinida a 'nada'"
@@ -113,6 +159,24 @@ echo 'int main() { return 0; }' > $tmp/ns2.c
 ! $kscc -nostdlib -o $tmp/foo $tmp/ns2.c 2> /dev/null
 check '-nostdlib sem _start'
 
+# -nostdlib com crt0 próprio em assembly, struct por valor e símbolo comum
+cat > $tmp/myrt.ksasm <<'EOT'
+        .text
+        .global _start
+_start:
+        call    main
+        syscall EXIT
+        halt
+EOT
+echo 'typedef struct { int a[3]; } T; int g; T mk(int x) { T t = {{x, x, x}}; return t; } int sum(T t) { return t.a[0] + t.a[1] + t.a[2]; } int main() { g = 2; return sum(mk(4)) + g; }' > $tmp/ns3.c
+$kscc -nostdlib -o $tmp/foo $tmp/myrt.ksasm $tmp/ns3.c
+$KSVM $tmp/foo
+[ "$?" = 14 ]
+check '-nostdlib com crt0 proprio'
+echo 'int ks_put_str(); int main() { return ks_put_str(); }' > $tmp/ns4.c
+$kscc -nostdlib -o $tmp/foo $tmp/myrt.ksasm $tmp/ns4.c 2>&1 | grep -q "referencia indefinida a 'ks_put_str'"
+check '-nostdlib sem runtime'
+
 # -Wl,--stack=N
 echo 'int f(int n) { int a[100]; a[0] = n; return n ? f(n - 1) + 1 : a[0]; } int main() { return f(50); }' > $tmp/stk.c
 $kscc -o $tmp/foo $tmp/stk.c
@@ -123,6 +187,17 @@ $kscc -Wl,--stack=65536 -o $tmp/foo $tmp/stk.c
 $KSVM $tmp/foo
 [ "$?" = 50 ]
 check '-Wl,--stack=65536'
+
+# -Wl,--stack com alloca/VLA: 6000 bytes não cabem na pilha padrão
+echo 'int f(int n) { char v[n]; v[n - 1] = 9; return v[n - 1]; } int main() { return f(6000); }' > $tmp/stk2.c
+$kscc -o $tmp/foo $tmp/stk2.c
+$KSVM $tmp/foo > /dev/null 2>&1
+[ "$?" = 77 ]
+check '-Wl,--stack (VLA estoura a padrao)'
+$kscc -Wl,--stack=16384 -o $tmp/foo $tmp/stk2.c
+$KSVM $tmp/foo
+[ "$?" = 9 ]
+check '-Wl,--stack=16384 (VLA)'
 
 # -###: mostra os comandos e não executa
 rm -f $tmp/hash.ksx

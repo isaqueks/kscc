@@ -215,6 +215,16 @@ static void gen_addr(Node *node) {
   error_tok(node->tok, "not an lvalue");
 }
 
+// kscc: r1 tem o campo nos bits altos (já deslocado para a esquerda);
+// desloca de volta estendendo sinal ou zero. _Bool é sem sinal (um
+// `_Bool b : 1` com 1 era lido como -1).
+static void extend_bitfield(Member *mem) {
+  if (mem->ty->is_unsigned || mem->ty->kind == TY_BOOL)
+    println("  shri r1, r1, %d", 32 - mem->bit_width);
+  else
+    println("  sari r1, r1, %d", 32 - mem->bit_width);
+}
+
 // Load a value from where r1 is pointing to.
 static void load(Type *ty) {
   switch (ty->kind) {
@@ -617,10 +627,7 @@ static void gen_expr(Node *node) {
     Member *mem = node->member;
     if (mem->is_bitfield) {
       println("  shli r1, r1, %d", 32 - mem->bit_width - mem->bit_offset);
-      if (mem->ty->is_unsigned)
-        println("  shri r1, r1, %d", 32 - mem->bit_width);
-      else
-        println("  sari r1, r1, %d", 32 - mem->bit_width);
+      extend_bitfield(mem);
     }
     return;
   }
@@ -654,7 +661,11 @@ static void gen_expr(Node *node) {
       println("  andl r1, r1, 0x%x", ~(mask << mem->bit_offset));
       println("  or r1, r1, r2");
       store(node->ty);
+      // kscc: o valor da atribuição é o valor armazenado (C11 6.5.16p3),
+      // truncado à largura do campo; o chibicc devolvia o lado direito.
       println("  mov r1, r6");
+      println("  shli r1, r1, %d", 32 - mem->bit_width);
+      extend_bitfield(mem);
       return;
     }
 

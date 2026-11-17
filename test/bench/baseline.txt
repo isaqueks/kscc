@@ -1,0 +1,8 @@
+# test/bench/baseline.txt — instrucoes executadas (ksvm --regs) e tamanho do .ksx
+# gerado por test/bench/run.sh --update (kscc v1, codegen ingenuo da fase 4)
+# benchmark instrucoes bytes_ksx
+fib 7405804 2028
+sieve 1262316 2428
+qsort_bench 4936282 4584
+strlen_loop 8742325 3084
+matmul 3254821 4560

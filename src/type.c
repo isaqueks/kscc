@@ -1,21 +1,27 @@
 #include "chibicc.h"
 
-Type *ty_void = &(Type){TY_VOID, 1, 1};
-Type *ty_bool = &(Type){TY_BOOL, 1, 1};
+Type *ty_void = &(Type){.kind = TY_VOID, .size = 1, .align = 1};
+Type *ty_bool = &(Type){.kind = TY_BOOL, .size = 1, .align = 1};
 
-Type *ty_char = &(Type){TY_CHAR, 1, 1};
-Type *ty_short = &(Type){TY_SHORT, 2, 2};
-Type *ty_int = &(Type){TY_INT, 4, 4};
-Type *ty_long = &(Type){TY_LONG, 8, 8};
+Type *ty_char = &(Type){.kind = TY_CHAR, .size = 1, .align = 1};
+Type *ty_short = &(Type){.kind = TY_SHORT, .size = 2, .align = 2};
+Type *ty_int = &(Type){.kind = TY_INT, .size = 4, .align = 4};
+// kscc: ILP32 (doc 02 §1): long e ponteiros têm 4 bytes.
+Type *ty_long = &(Type){.kind = TY_LONG, .size = 4, .align = 4};
 
-Type *ty_uchar = &(Type){TY_CHAR, 1, 1, true};
-Type *ty_ushort = &(Type){TY_SHORT, 2, 2, true};
-Type *ty_uint = &(Type){TY_INT, 4, 4, true};
-Type *ty_ulong = &(Type){TY_LONG, 8, 8, true};
+Type *ty_uchar = &(Type){.kind = TY_CHAR, .size = 1, .align = 1, .is_unsigned = true};
+Type *ty_ushort = &(Type){.kind = TY_SHORT, .size = 2, .align = 2, .is_unsigned = true};
+Type *ty_uint = &(Type){.kind = TY_INT, .size = 4, .align = 4, .is_unsigned = true};
+Type *ty_ulong = &(Type){.kind = TY_LONG, .size = 4, .align = 4, .is_unsigned = true};
 
-Type *ty_float = &(Type){TY_FLOAT, 4, 4};
-Type *ty_double = &(Type){TY_DOUBLE, 8, 8};
-Type *ty_ldouble = &(Type){TY_LDOUBLE, 16, 16};
+// kscc: tipos de 64 bits que só aparecem em #if (literais grandes avaliados
+// em intmax_t). Fora do preprocessador, o parser rejeita (fase 5).
+Type *ty_llong = &(Type){.kind = TY_LONG, .size = 8, .align = 4};
+Type *ty_ullong = &(Type){.kind = TY_LONG, .size = 8, .align = 4, .is_unsigned = true};
+
+Type *ty_float = &(Type){.kind = TY_FLOAT, .size = 4, .align = 4};
+Type *ty_double = &(Type){.kind = TY_DOUBLE, .size = 8, .align = 8};
+Type *ty_ldouble = &(Type){.kind = TY_LDOUBLE, .size = 16, .align = 16};
 
 static Type *new_type(TypeKind kind, int size, int align) {
   Type *ty = calloc(1, sizeof(Type));
@@ -95,7 +101,7 @@ Type *copy_type(Type *ty) {
 }
 
 Type *pointer_to(Type *base) {
-  Type *ty = new_type(TY_PTR, 8, 8);
+  Type *ty = new_type(TY_PTR, 4, 4); // kscc: ILP32
   ty->base = base;
   ty->is_unsigned = true;
   return ty;
@@ -117,7 +123,7 @@ Type *array_of(Type *base, int len) {
 }
 
 Type *vla_of(Type *base, Node *len) {
-  Type *ty = new_type(TY_VLA, 8, 8);
+  Type *ty = new_type(TY_VLA, 4, 4); // kscc: ILP32
   ty->base = base;
   ty->vla_len = len;
   return ty;
@@ -129,6 +135,11 @@ Type *enum_type(void) {
 
 Type *struct_type(void) {
   return new_type(TY_STRUCT, 0, 1);
+}
+
+// kscc: posto de conversão (C11 6.3.1.1) dos tipos inteiros de 4 bytes.
+static int int_rank(Type *ty) {
+  return ty->kind == TY_LONG ? 2 : 1;
 }
 
 static Type *get_common_type(Type *ty1, Type *ty2) {
@@ -155,9 +166,18 @@ static Type *get_common_type(Type *ty1, Type *ty2) {
   if (ty1->size != ty2->size)
     return (ty1->size < ty2->size) ? ty2 : ty1;
 
-  if (ty2->is_unsigned)
-    return ty2;
-  return ty1;
+  // kscc: na ILP32 int e long têm o mesmo tamanho, então a regra do C11
+  // 6.3.1.8 precisa olhar o posto (long > int), não só o tamanho:
+  // long + unsigned int dá unsigned long (o long não representa todos os
+  // valores do unsigned int).
+  if (ty1->is_unsigned == ty2->is_unsigned)
+    return (int_rank(ty2) > int_rank(ty1)) ? ty2 : ty1;
+
+  Type *u = ty1->is_unsigned ? ty1 : ty2;
+  Type *s = ty1->is_unsigned ? ty2 : ty1;
+  if (int_rank(u) >= int_rank(s))
+    return u;
+  return (s->kind == TY_LONG) ? ty_ulong : ty_uint;
 }
 
 // For many binary operators, we implicitly promote operands so that
@@ -236,6 +256,11 @@ void add_type(Node *node) {
   case ND_BITNOT:
   case ND_SHL:
   case ND_SHR:
+    // kscc: promoção inteira do operando (C11 6.5.7p3, 6.5.3.3p4), que o
+    // chibicc omitia. Com valores reduzidos ao tipo (eval e casts),
+    // `(char)1 << 10` precisa ter tipo int.
+    if (is_integer(node->lhs->ty) && node->lhs->ty->size < 4)
+      node->lhs = new_cast(node->lhs, ty_int);
     node->ty = node->lhs->ty;
     return;
   case ND_VAR:

@@ -106,6 +106,9 @@ static Node *current_switch;
 
 static Obj *builtin_alloca;
 
+// kscc: true enquanto o preprocessador avalia um #if (ver pp_const_expr).
+static bool pp_mode;
+
 static bool is_typename(Token *tok);
 static Type *declspec(Token **rest, Token *tok, VarAttr *attr);
 static Type *typename(Token **rest, Token *tok);
@@ -126,6 +129,7 @@ static Node *expr_stmt(Token **rest, Token *tok);
 static Node *expr(Token **rest, Token *tok);
 static int64_t eval(Node *node);
 static int64_t eval2(Node *node, char ***label);
+static int64_t eval2_raw(Node *node, char ***label);
 static int64_t eval_rval(Node *node, char ***label);
 static bool is_const_expr(Node *node);
 static Node *assign(Token **rest, Token *tok);
@@ -222,10 +226,11 @@ static Node *new_long(int64_t val, Token *tok) {
   return node;
 }
 
+// kscc: usado por sizeof e _Alignof, cujo tipo é size_t = unsigned int (ILP32).
 static Node *new_ulong(long val, Token *tok) {
   Node *node = new_node(ND_NUM, tok);
   node->val = val;
-  node->ty = ty_ulong;
+  node->ty = ty_uint;
   return node;
 }
 
@@ -326,7 +331,9 @@ static Obj *new_gvar(char *name, Type *ty) {
 
 static char *new_unique_name(void) {
   static int id = 0;
-  return format(".L..%d", id++);
+  // kscc: o ksas lê ".L..." como diretiva, e labels precisam ser únicos
+  // entre unidades concatenadas no link: L<id da unidade>..N.
+  return format("L%s..%d", unit_id, id++);
 }
 
 static Obj *new_anon_gvar(Type *ty) {
@@ -336,6 +343,7 @@ static Obj *new_anon_gvar(Type *ty) {
 static Obj *new_string_literal(char *p, Type *ty) {
   Obj *var = new_anon_gvar(ty);
   var->init_data = p;
+  var->is_str_lit = true; // kscc: vai para .rodata
   return var;
 }
 
@@ -403,6 +411,10 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
 
   while (is_typename(tok)) {
     // Handle storage class specifiers.
+    // kscc: TLS não existe na KSVM (sem threads).
+    if (equal(tok, "_Thread_local") || equal(tok, "__thread"))
+      error_tok(tok, "%.*s nao suportado nesta versao do kscc", tok->len, tok->loc);
+
     if (equal(tok, "typedef") || equal(tok, "static") || equal(tok, "extern") ||
         equal(tok, "inline") || equal(tok, "_Thread_local") || equal(tok, "__thread")) {
       if (!attr)
@@ -433,6 +445,10 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
         consume(&tok, tok, "restrict") || consume(&tok, tok, "__restrict") ||
         consume(&tok, tok, "__restrict__") || consume(&tok, tok, "_Noreturn"))
       continue;
+
+    // kscc: sem atômicos na v1 (doc 01 §4).
+    if (equal(tok, "_Atomic"))
+      error_tok(tok, "_Atomic nao suportado nesta versao do kscc");
 
     if (equal(tok, "_Atomic")) {
       tok = tok->next;
@@ -540,29 +556,28 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
       break;
     case LONG:
     case LONG + INT:
-    case LONG + LONG:
-    case LONG + LONG + INT:
     case SIGNED + LONG:
     case SIGNED + LONG + INT:
-    case SIGNED + LONG + LONG:
-    case SIGNED + LONG + LONG + INT:
       ty = ty_long;
       break;
     case UNSIGNED + LONG:
     case UNSIGNED + LONG + INT:
-    case UNSIGNED + LONG + LONG:
-    case UNSIGNED + LONG + LONG + INT:
       ty = ty_ulong;
       break;
+    // kscc: long long (64 bits) entra na fase 5 e ponto flutuante na fase 6
+    // (doc 07). Até lá, erro explícito em vez de código errado.
+    case LONG + LONG:
+    case LONG + LONG + INT:
+    case SIGNED + LONG + LONG:
+    case SIGNED + LONG + LONG + INT:
+    case UNSIGNED + LONG + LONG:
+    case UNSIGNED + LONG + LONG + INT:
+      error_tok(tok, "long long nao suportado nesta versao do kscc");
     case FLOAT:
-      ty = ty_float;
-      break;
     case DOUBLE:
-      ty = ty_double;
-      break;
     case LONG + DOUBLE:
-      ty = ty_ldouble;
-      break;
+      error_tok(tok, "ponto flutuante (%.*s) nao suportado nesta versao do kscc",
+                tok->len, tok->loc);
     default:
       error_tok(tok, "invalid type");
     }
@@ -622,12 +637,18 @@ static Type *func_params(Token **rest, Token *tok, Type *ty) {
     cur = cur->next = copy_type(ty2);
   }
 
+  // kscc: `f()` sem protótipo continua aceitando quaisquer argumentos, mas
+  // é marcado is_oldstyle: na KSVM a convenção variádica (tudo na pilha)
+  // difere da normal, e uma chamada sem protótipo usa a normal (como nas
+  // ABIs de i386/ARM), para casar com a definição com parâmetros.
+  bool is_oldstyle = (cur == &head);
   if (cur == &head)
     is_variadic = true;
 
   ty = func_type(ty);
   ty->params = head.next;
   ty->is_variadic = is_variadic;
+  ty->is_oldstyle = is_oldstyle;
   *rest = tok->next;
   return ty;
 }
@@ -1332,7 +1353,7 @@ static Node *create_lvar_init(Initializer *init, Type *ty, InitDesg *desg, Token
   if (ty->kind == TY_ARRAY) {
     Node *node = new_node(ND_NULL_EXPR, tok);
     for (int i = 0; i < ty->array_len; i++) {
-      InitDesg desg2 = {desg, i};
+      InitDesg desg2 = {desg, i, NULL, NULL};
       Node *rhs = create_lvar_init(init->children[i], ty->base, &desg2, tok);
       node = new_binary(ND_COMMA, node, rhs, tok);
     }
@@ -1343,7 +1364,7 @@ static Node *create_lvar_init(Initializer *init, Type *ty, InitDesg *desg, Token
     Node *node = new_node(ND_NULL_EXPR, tok);
 
     for (Member *mem = ty->members; mem; mem = mem->next) {
-      InitDesg desg2 = {desg, 0, mem};
+      InitDesg desg2 = {desg, 0, mem, NULL};
       Node *rhs = create_lvar_init(init->children[mem->idx], mem->ty, &desg2, tok);
       node = new_binary(ND_COMMA, node, rhs, tok);
     }
@@ -1352,7 +1373,7 @@ static Node *create_lvar_init(Initializer *init, Type *ty, InitDesg *desg, Token
 
   if (ty->kind == TY_UNION) {
     Member *mem = init->mem ? init->mem : ty->members;
-    InitDesg desg2 = {desg, 0, mem};
+    InitDesg desg2 = {desg, 0, mem, NULL};
     return create_lvar_init(init->children[mem->idx], mem->ty, &desg2, tok);
   }
 
@@ -1506,7 +1527,7 @@ static bool is_typename(Token *tok) {
       "_Thread_local", "__thread", "_Atomic",
     };
 
-    for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++)
+    for (int i = 0; i < (int)(sizeof(kw) / sizeof(*kw)); i++)
       hashmap_put(&map, kw[i], (void *)1);
   }
 
@@ -1515,6 +1536,9 @@ static bool is_typename(Token *tok) {
 
 // asm-stmt = "asm" ("volatile" | "inline")* "(" string-literal ")"
 static Node *asm_stmt(Token **rest, Token *tok) {
+  // kscc: asm inline fica para a fase 7 (doc 01 §4).
+  error_tok(tok, "asm nao suportado nesta versao do kscc");
+
   Node *node = new_node(ND_ASM, tok);
   tok = tok->next;
 
@@ -1829,6 +1853,53 @@ static int64_t eval(Node *node) {
   return eval2(node, NULL);
 }
 
+// kscc: o alvo é ILP32. Node::val continua int64_t, mas depois de cada
+// operação o resultado é reduzido ao tamanho e ao sinal do tipo do nó,
+// exatamente como a VM faria em 32 bits (valores com sinal ficam estendidos
+// com sinal; sem sinal, estendidos com zero). Em #if (pp_mode) não há
+// redução: o C manda avaliar em intmax_t, e o chibicc já fazia isso em 64.
+static int64_t wrap_to_type(Type *ty, int64_t val) {
+  if (pp_mode)
+    return val;
+
+  if (ty->kind == TY_BOOL)
+    return val != 0;
+
+  if (!is_integer(ty) && ty->kind != TY_PTR)
+    return val;
+
+  switch (ty->size) {
+  case 1: return ty->is_unsigned ? (int64_t)(uint8_t)val : (int64_t)(int8_t)val;
+  case 2: return ty->is_unsigned ? (int64_t)(uint16_t)val : (int64_t)(int16_t)val;
+  case 4: return ty->is_unsigned ? (int64_t)(uint32_t)val : (int64_t)(int32_t)val;
+  }
+  return val;
+}
+
+// kscc: máscara da contagem de deslocamento. A KSVM usa `& 31`; deslocar
+// por >= largura é UB em C, então isso só fixa um resultado (o da VM) e
+// evita UB no host.
+static int shift_count(Node *node, int64_t n) {
+  return (int)(n & ((!pp_mode && node->ty->size <= 4) ? 31 : 63));
+}
+
+static int64_t eval_div(Node *node, bool is_mod) {
+  int64_t l = eval(node->lhs);
+  int64_t r = eval(node->rhs);
+  if (r == 0)
+    error_tok(node->tok, "divisao por zero em expressao constante");
+
+  if (node->ty->is_unsigned)
+    return is_mod ? (int64_t)((uint64_t)l % (uint64_t)r)
+                  : (int64_t)((uint64_t)l / (uint64_t)r);
+
+  // INT64_MIN / -1 é UB no host (só alcançável em #if). Em 32 bits,
+  // INT32_MIN / -1 dá INT32_MIN depois de wrap_to_type, como na VM.
+  if (r == -1)
+    return is_mod ? 0 : (int64_t)(0 - (uint64_t)l);
+  return is_mod ? l % r : l / r;
+}
+
 // Evaluate a given node as a constant expression.
 //
 // A constant expression is either just a number or ptr+n where ptr
@@ -1837,50 +1908,58 @@ static int64_t eval(Node *node) {
 // expression for a global variable.
 static int64_t eval2(Node *node, char ***label) {
   add_type(node);
+  return wrap_to_type(node->ty, eval2_raw(node, label));
+}
 
+// kscc: soma, subtração, multiplicação e negação em uint64_t para que o
+// overflow (bem definido no alvo depois de wrap_to_type) não seja UB no host.
+static int64_t eval2_raw(Node *node, char ***label) {
   if (is_flonum(node->ty))
     return eval_double(node);
 
   switch (node->kind) {
   case ND_ADD:
-    return eval2(node->lhs, label) + eval(node->rhs);
+    return (int64_t)((uint64_t)eval2(node->lhs, label) + (uint64_t)eval(node->rhs));
   case ND_SUB:
-    return eval2(node->lhs, label) - eval(node->rhs);
+    return (int64_t)((uint64_t)eval2(node->lhs, label) - (uint64_t)eval(node->rhs));
   case ND_MUL:
-    return eval(node->lhs) * eval(node->rhs);
+    return (int64_t)((uint64_t)eval(node->lhs) * (uint64_t)eval(node->rhs));
   case ND_DIV:
-    if (node->ty->is_unsigned)
-      return (uint64_t)eval(node->lhs) / eval(node->rhs);
-    return eval(node->lhs) / eval(node->rhs);
+    return eval_div(node, false);
   case ND_NEG:
-    return -eval(node->lhs);
+    return (int64_t)(0 - (uint64_t)eval(node->lhs));
   case ND_MOD:
-    if (node->ty->is_unsigned)
-      return (uint64_t)eval(node->lhs) % eval(node->rhs);
-    return eval(node->lhs) % eval(node->rhs);
+    return eval_div(node, true);
   case ND_BITAND:
     return eval(node->lhs) & eval(node->rhs);
   case ND_BITOR:
     return eval(node->lhs) | eval(node->rhs);
   case ND_BITXOR:
     return eval(node->lhs) ^ eval(node->rhs);
-  case ND_SHL:
-    return eval(node->lhs) << eval(node->rhs);
-  case ND_SHR:
-    if (node->ty->is_unsigned && node->ty->size == 8)
-      return (uint64_t)eval(node->lhs) >> eval(node->rhs);
-    return eval(node->lhs) >> eval(node->rhs);
+  case ND_SHL: {
+    int64_t l = eval(node->lhs);
+    return (int64_t)((uint64_t)l << shift_count(node, eval(node->rhs)));
+  }
+  case ND_SHR: {
+    // Valores sem sinal já estão estendidos com zero, então o shift lógico
+    // em 64 bits dá o resultado de 32. Com sinal: shift aritmético.
+    int64_t l = eval(node->lhs);
+    int n = shift_count(node, eval(node->rhs));
+    if (node->ty->is_unsigned)
+      return (int64_t)((uint64_t)l >> n);
+    return l >> n;
+  }
   case ND_EQ:
     return eval(node->lhs) == eval(node->rhs);
   case ND_NE:
     return eval(node->lhs) != eval(node->rhs);
   case ND_LT:
     if (node->lhs->ty->is_unsigned)
-      return (uint64_t)eval(node->lhs) < eval(node->rhs);
+      return (uint64_t)eval(node->lhs) < (uint64_t)eval(node->rhs);
     return eval(node->lhs) < eval(node->rhs);
   case ND_LE:
     if (node->lhs->ty->is_unsigned)
-      return (uint64_t)eval(node->lhs) <= eval(node->rhs);
+      return (uint64_t)eval(node->lhs) <= (uint64_t)eval(node->rhs);
     return eval(node->lhs) <= eval(node->rhs);
   case ND_COND:
     return eval(node->cond) ? eval2(node->then, label) : eval2(node->els, label);
@@ -1894,17 +1973,10 @@ static int64_t eval2(Node *node, char ***label) {
     return eval(node->lhs) && eval(node->rhs);
   case ND_LOGOR:
     return eval(node->lhs) || eval(node->rhs);
-  case ND_CAST: {
-    int64_t val = eval2(node->lhs, label);
-    if (is_integer(node->ty)) {
-      switch (node->ty->size) {
-      case 1: return node->ty->is_unsigned ? (uint8_t)val : (int8_t)val;
-      case 2: return node->ty->is_unsigned ? (uint16_t)val : (int16_t)val;
-      case 4: return node->ty->is_unsigned ? (uint32_t)val : (int32_t)val;
-      }
-    }
-    return val;
-  }
+  case ND_CAST:
+    // kscc: a conversão para o tipo destino (inclusive para _Bool, que o
+    // chibicc tratava como char) é feita por wrap_to_type em eval2.
+    return eval2(node->lhs, label);
   case ND_ADDR:
     return eval_rval(node->lhs, label);
   case ND_LABEL_VAL:
@@ -1987,6 +2059,16 @@ static bool is_const_expr(Node *node) {
 int64_t const_expr(Token **rest, Token *tok) {
   Node *node = conditional(rest, tok);
   return eval(node);
+}
+
+// kscc: expressão de #if. O C manda avaliar em intmax_t/uintmax_t, então
+// aqui não há redução a 32 bits e constantes de 64 bits são aceitas.
+int64_t pp_const_expr(Token **rest, Token *tok) {
+  pp_mode = true;
+  Node *node = conditional(rest, tok);
+  int64_t val = eval(node);
+  pp_mode = false;
+  return val;
 }
 
 static double eval_double(Node *node) {
@@ -2406,7 +2488,7 @@ static Node *new_sub(Node *lhs, Node *rhs, Token *tok) {
   // ptr - ptr, which returns how many elements are between the two.
   if (lhs->ty->base && rhs->ty->base) {
     Node *node = new_binary(ND_SUB, lhs, rhs, tok);
-    node->ty = ty_long;
+    node->ty = ty_int; // kscc: ptrdiff_t é int (ILP32)
     return new_binary(ND_DIV, node, new_num(lhs->ty->base->size, tok), tok);
   }
 
@@ -3057,6 +3139,10 @@ static Node *primary(Token **rest, Token *tok) {
     return new_num(2, start);
   }
 
+  // kscc: sem atômicos na v1.
+  if (equal(tok, "__builtin_compare_and_swap") || equal(tok, "__builtin_atomic_exchange"))
+    error_tok(tok, "%.*s nao suportado nesta versao do kscc", tok->len, tok->loc);
+
   if (equal(tok, "__builtin_compare_and_swap")) {
     Node *node = new_node(ND_CAS, tok);
     tok = skip(tok->next, "(");
@@ -3108,6 +3194,16 @@ static Node *primary(Token **rest, Token *tok) {
     Obj *var = new_string_literal(tok->str, tok->ty);
     *rest = tok->next;
     return new_var_node(var, tok);
+  }
+
+  // kscc: literais de ponto flutuante (fase 6) e inteiros que só cabem em
+  // long long (fase 5) são rejeitados, exceto em #if, que o C avalia em
+  // intmax_t (ver pp_const_expr).
+  if (tok->kind == TK_NUM && !pp_mode) {
+    if (is_flonum(tok->ty))
+      error_tok(tok, "ponto flutuante nao suportado nesta versao do kscc");
+    if (tok->ty->size > 4)
+      error_tok(tok, "constante nao cabe em 32 bits (long long nao suportado nesta versao do kscc)");
   }
 
   if (tok->kind == TK_NUM) {
@@ -3211,6 +3307,10 @@ static Token *function(Token *tok, Type *basety, VarAttr *attr) {
       error_tok(tok, "redefinition of %s", name_str);
     if (!fn->is_static && attr->is_static)
       error_tok(tok, "static declaration follows a non-static declaration");
+    // kscc: a definição traz o protótipo que vale para o codegen (uma
+    // declaração anterior `f()` não diz se a função é variádica).
+    if (equal(tok, "{"))
+      fn->ty = ty;
     fn->is_definition = fn->is_definition || equal(tok, "{");
   } else {
     fn = new_gvar(name_str, ty);
@@ -3238,8 +3338,8 @@ static Token *function(Token *tok, Type *basety, VarAttr *attr) {
 
   fn->params = locals;
 
-  if (ty->is_variadic)
-    fn->va_area = new_lvar("__va_area__", array_of(ty_char, 136));
+  // kscc: sem __va_area__: na KSVM uma função variádica recebe todos os
+  // argumentos na pilha (doc 02 §3.2) e va_list é um char*.
   fn->alloca_bottom = new_lvar("__alloca_size__", pointer_to(ty_char));
 
   tok = skip(tok, "{");

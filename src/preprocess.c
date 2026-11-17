@@ -120,7 +120,7 @@ static Hideset *hideset_union(Hideset *hs1, Hideset *hs2) {
 
 static bool hideset_contains(Hideset *hs, char *s, int len) {
   for (; hs; hs = hs->next)
-    if (strlen(hs->name) == len && !strncmp(hs->name, s, len))
+    if (strlen(hs->name) == (size_t)len && !strncmp(hs->name, s, len))
       return true;
   return false;
 }
@@ -301,7 +301,7 @@ static long eval_const_expr(Token **rest, Token *tok) {
   convert_pp_tokens(expr);
 
   Token *rest2;
-  long val = const_expr(&rest2, expr);
+  long val = pp_const_expr(&rest2, expr); // kscc: #if em intmax_t
   if (rest2->kind != TK_EOF)
     error_tok(rest2, "extra token");
   return val;
@@ -456,7 +456,7 @@ read_macro_args(Token **rest, Token *tok, MacroParam *params, char *va_args_name
 
 static MacroArg *find_arg(MacroArg *args, Token *tok) {
   for (MacroArg *ap = args; ap; ap = ap->next)
-    if (tok->len == strlen(ap->name) && !strncmp(tok->loc, ap->name, tok->len))
+    if ((size_t)tok->len == strlen(ap->name) && !strncmp(tok->loc, ap->name, tok->len))
       return ap;
   return NULL;
 }
@@ -1059,46 +1059,45 @@ static char *format_time(struct tm *tm) {
 
 void init_macros(void) {
   // Define predefined macros
-  define_macro("_LP64", "1");
-  define_macro("__C99_MACRO_WITH_VA_ARGS", "1");
-  define_macro("__ELF__", "1");
-  define_macro("__LP64__", "1");
-  define_macro("__SIZEOF_DOUBLE__", "8");
-  define_macro("__SIZEOF_FLOAT__", "4");
+  //
+  // kscc: macros do doc 04 §4. Saem as de x86-64/Linux/LP64 (__x86_64__,
+  // __linux__, __LP64__, __ELF__, unix...); __SIZEOF_LONG_LONG__,
+  // __SIZEOF_FLOAT__ e __SIZEOF_DOUBLE__ entram com as fases 5 e 6.
+  define_macro("__ksvm__", "1");
+  define_macro("__ksvm_isa__", "0x0200");
+  define_macro("__kscc__", "1");
+  define_macro("__kscc_version__", "\"0.1\"");
+  define_macro("__ILP32__", "1");
+  define_macro("_ILP32", "1");
+  define_macro("__CHAR_BIT__", "8");
   define_macro("__SIZEOF_INT__", "4");
-  define_macro("__SIZEOF_LONG_DOUBLE__", "8");
-  define_macro("__SIZEOF_LONG_LONG__", "8");
-  define_macro("__SIZEOF_LONG__", "8");
-  define_macro("__SIZEOF_POINTER__", "8");
-  define_macro("__SIZEOF_PTRDIFF_T__", "8");
+  define_macro("__SIZEOF_LONG__", "4");
+  define_macro("__SIZEOF_POINTER__", "4");
+  define_macro("__SIZEOF_PTRDIFF_T__", "4");
   define_macro("__SIZEOF_SHORT__", "2");
-  define_macro("__SIZEOF_SIZE_T__", "8");
-  define_macro("__SIZE_TYPE__", "unsigned long");
+  define_macro("__SIZEOF_SIZE_T__", "4");
+  define_macro("__SIZE_TYPE__", "unsigned int");
+  define_macro("__PTRDIFF_TYPE__", "int");
+  define_macro("__ORDER_LITTLE_ENDIAN__", "1234");
+  define_macro("__ORDER_BIG_ENDIAN__", "4321");
+  define_macro("__BYTE_ORDER__", "__ORDER_LITTLE_ENDIAN__");
+  define_macro("__C99_MACRO_WITH_VA_ARGS", "1");
   define_macro("__STDC_HOSTED__", "1");
+  define_macro("__STDC_NO_ATOMICS__", "1");
   define_macro("__STDC_NO_COMPLEX__", "1");
+  define_macro("__STDC_NO_THREADS__", "1");
+  define_macro("__STDC_NO_VLA__", "1");
   define_macro("__STDC_UTF_16__", "1");
   define_macro("__STDC_UTF_32__", "1");
   define_macro("__STDC_VERSION__", "201112L");
   define_macro("__STDC__", "1");
   define_macro("__USER_LABEL_PREFIX__", "");
   define_macro("__alignof__", "_Alignof");
-  define_macro("__amd64", "1");
-  define_macro("__amd64__", "1");
-  define_macro("__chibicc__", "1");
   define_macro("__const__", "const");
-  define_macro("__gnu_linux__", "1");
   define_macro("__inline__", "inline");
-  define_macro("__linux", "1");
-  define_macro("__linux__", "1");
   define_macro("__signed__", "signed");
   define_macro("__typeof__", "typeof");
-  define_macro("__unix", "1");
-  define_macro("__unix__", "1");
   define_macro("__volatile__", "volatile");
-  define_macro("__x86_64", "1");
-  define_macro("__x86_64__", "1");
-  define_macro("linux", "1");
-  define_macro("unix", "1");
 
   add_builtin("__FILE__", file_macro);
   add_builtin("__LINE__", line_macro);

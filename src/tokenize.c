@@ -148,7 +148,7 @@ static int read_punct(char *p) {
     "||", "<<", ">>", "##",
   };
 
-  for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++)
+  for (int i = 0; i < (int)(sizeof(kw) / sizeof(*kw)); i++)
     if (startswith(p, kw[i]))
       return strlen(kw[i]);
 
@@ -170,7 +170,7 @@ static bool is_keyword(Token *tok) {
       "__attribute__",
     };
 
-    for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++)
+    for (int i = 0; i < (int)(sizeof(kw) / sizeof(*kw)); i++)
       hashmap_put(&map, kw[i], (void *)1);
   }
 
@@ -359,6 +359,7 @@ static bool convert_pp_int(Token *tok) {
   // Read U, L or LL suffixes.
   bool l = false;
   bool u = false;
+  bool ll = false; // kscc: sufixo LL (long long)
 
   if (startswith(p, "LLU") || startswith(p, "LLu") ||
       startswith(p, "llU") || startswith(p, "llu") ||
@@ -366,12 +367,14 @@ static bool convert_pp_int(Token *tok) {
       startswith(p, "uLL") || startswith(p, "ull")) {
     p += 3;
     l = u = true;
+    ll = true;
   } else if (!strncasecmp(p, "lu", 2) || !strncasecmp(p, "ul", 2)) {
     p += 2;
     l = u = true;
   } else if (startswith(p, "LL") || startswith(p, "ll")) {
     p += 2;
     l = true;
+    ll = true;
   } else if (*p == 'L' || *p == 'l') {
     p++;
     l = true;
@@ -384,31 +387,32 @@ static bool convert_pp_int(Token *tok) {
     return false;
 
   // Infer a type.
+  //
+  // kscc: tabela do C11 6.4.4.1 para ILP32 (int = long = 32 bits). O que só
+  // cabe em long long recebe ty_llong/ty_ullong; o parser rejeita esses
+  // tipos fora de #if (long long é a fase 5).
+  uint64_t v = (uint64_t)val;
+  bool fits_int = v <= 0x7FFFFFFF;
+  bool fits_uint = v <= 0xFFFFFFFF;
+  bool fits_llong = v <= 0x7FFFFFFFFFFFFFFF;
+
   Type *ty;
-  if (base == 10) {
-    if (l && u)
-      ty = ty_ulong;
-    else if (l)
-      ty = ty_long;
-    else if (u)
-      ty = (val >> 32) ? ty_ulong : ty_uint;
+  if (ll) {
+    ty = (u || !fits_llong) ? ty_ullong : ty_llong;
+  } else if (u) {
+    ty = fits_uint ? (l ? ty_ulong : ty_uint) : ty_ullong;
+  } else if (base == 10) {
+    if (fits_int)
+      ty = l ? ty_long : ty_int;
     else
-      ty = (val >> 31) ? ty_long : ty_int;
+      ty = fits_llong ? ty_llong : ty_ullong;
   } else {
-    if (l && u)
-      ty = ty_ulong;
-    else if (l)
-      ty = (val >> 63) ? ty_ulong : ty_long;
-    else if (u)
-      ty = (val >> 32) ? ty_ulong : ty_uint;
-    else if (val >> 63)
-      ty = ty_ulong;
-    else if (val >> 32)
-      ty = ty_long;
-    else if (val >> 31)
-      ty = ty_uint;
+    if (fits_int)
+      ty = l ? ty_long : ty_int;
+    else if (fits_uint)
+      ty = l ? ty_ulong : ty_uint;
     else
-      ty = ty_int;
+      ty = fits_llong ? ty_llong : ty_ullong;
   }
 
   tok->kind = TK_NUM;

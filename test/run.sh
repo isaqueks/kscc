@@ -3,15 +3,22 @@
 #
 #   test/run.sh [caminho/do/kscc] [filtro]
 #
-# 1. test/unit/*.c: cada arquivo é compilado com o kscc, executado no ksvm
-#    (--max-insns 50000000) e comparado com os cabeçalhos:
+# 1. test/unit/*.c: cada arquivo é compilado com o kscc (e a libks),
+#    executado no ksvm (--max-insns 50000000) e comparado com os
+#    cabeçalhos:
 #      // expect-exit: N                código de saída (padrão 0)
 #      // expect-out: texto             uma linha de stdout (repetível; a
 #                                       saída esperada é a concatenação)
+#      // expect-noeol                  a saída termina sem '\n' (tira o
+#                                       '\n' da última linha esperada)
 #      // expect-error: texto           a compilação deve FALHAR e a
 #                                       mensagem conter `texto`
 #      // cflags: opções               opções extras para o kscc
-# 2. test/chibicc/*.c (menos os listados em test/chibicc/SKIP): compilado
+#      // stdin: texto                  uma linha da entrada padrão do
+#                                       programa (repetível; sem nenhuma,
+#                                       a entrada é vazia)
+# 2. examples/*.c: os programas de exemplo, com os mesmos cabeçalhos.
+# 3. test/chibicc/*.c (menos os listados em test/chibicc/SKIP): compilado
 #    com common.c; passa se sai com 0 e a última linha é "OK".
 #
 # Variáveis: KSAS, KSVM (caminhos), KSCC_TEST_TRACE=1 (reexecuta o teste que
@@ -53,10 +60,12 @@ report_fail() {
 # ---------------------------------------------------------------------------
 # Unitários
 # ---------------------------------------------------------------------------
+# run_unit arquivo.c [grupo] — grupo "unit" (padrão) ou "examples".
 run_unit() {
   local src=$1
-  local name="unit/$(basename "$src" .c)"
-  local base="$OUT/unit-$(basename "$src" .c)"
+  local group=${2:-unit}
+  local name="$group/$(basename "$src" .c)"
+  local base="$OUT/$group-$(basename "$src" .c)"
   local ksx="$base.ksx"
 
   local exp_exit exp_err cflags
@@ -65,6 +74,10 @@ run_unit() {
   exp_exit=${exp_exit:-0}
   exp_err=$(sed -n 's|^// expect-error: *||p' "$src" | head -1)
   sed -n 's|^// expect-out: \{0,1\}||p' "$src" > "$base.expected"
+  sed -n 's|^// stdin: \{0,1\}||p' "$src" > "$base.stdin"
+  if grep -q '^// expect-noeol' "$src" && [ -s "$base.expected" ]; then
+    truncate -s -1 "$base.expected"
+  fi
 
   "$KSCC" -Itest/unit $cflags -o "$ksx" "$src" 2> "$base.cerr"
   local crc=$?
@@ -86,7 +99,7 @@ run_unit() {
     return
   fi
 
-  "$KSVM" --max-insns $MAX_INSNS "$ksx" > "$base.out" 2> "$base.err"
+  "$KSVM" --max-insns $MAX_INSNS "$ksx" < "$base.stdin" > "$base.out" 2> "$base.err"
   local rc=$?
 
   local msgs=()
@@ -103,7 +116,7 @@ run_unit() {
     pass=$((pass + 1))
   else
     report_fail "$name" "${msgs[@]}"
-    trace "unit-$(basename "$src" .c)" "$ksx"
+    trace "$group-$(basename "$src" .c)" "$ksx"
   fi
 }
 
@@ -153,18 +166,24 @@ run_chibicc() {
 }
 
 unit_files=$(ls test/unit/*.c 2>/dev/null | grep -- "$FILTER")
+example_files=$(ls examples/*.c 2>/dev/null | grep -- "$FILTER")
 chibicc_files=$(ls test/chibicc/*.c 2>/dev/null | grep -v '/common\.c$' | grep -- "$FILTER")
 
 for f in $unit_files; do run_unit "$f"; done
 unit_pass=$pass
 unit_fail=$fail
 
+for f in $example_files; do run_unit "$f" examples; done
+example_pass=$((pass - unit_pass))
+example_fail=$((fail - unit_fail))
+
 for f in $chibicc_files; do run_chibicc "$f"; done
-chibicc_pass=$((pass - unit_pass))
-chibicc_fail=$((fail - unit_fail))
+chibicc_pass=$((pass - unit_pass - example_pass))
+chibicc_fail=$((fail - unit_fail - example_fail))
 
 echo
 echo "unitários:         $unit_pass passaram, $unit_fail falharam"
+echo "exemplos:          $example_pass passaram, $example_fail falharam"
 echo "suite do chibicc:  $chibicc_pass passaram, $chibicc_fail falharam, $skip pulados (ver $SKIPFILE)"
 
 if [ $fail -ne 0 ]; then

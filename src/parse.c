@@ -2051,6 +2051,15 @@ static int64_t eval2_raw(Node *node, char ***label) {
     if (node->ty->kind != TY_ARRAY)
       error_tok(node->tok, "invalid initializer");
     return eval_rval(node->lhs, label) + node->member->offset;
+  case ND_DEREF:
+    // kscc: g[1] com g de 2+ dimensões é *(g + 1) de tipo array, que decai
+    // para o endereço g + 36; o chibicc rejeitava `int *p = &g[1][3];`
+    // ("not a compile-time constant"), achado pelo Csmith.
+    if (!label)
+      error_tok(node->tok, "not a compile-time constant");
+    if (node->ty->kind != TY_ARRAY)
+      error_tok(node->tok, "invalid initializer");
+    return eval2(node->lhs, label);
   case ND_VAR:
     if (!label)
       error_tok(node->tok, "not a compile-time constant");

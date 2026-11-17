@@ -2900,8 +2900,14 @@ static Type *struct_decl(Token **rest, Token *tok) {
       mem->bit_offset = bits % (sz * 8);
       bits += mem->bit_width;
     } else {
+      // kscc: numa struct packed, depois de um bitfield `bits` pode não
+      // estar num limite de byte; bits / 8 arredondava para baixo e o
+      // membro se sobrepunha aos bits altos do campo (escrever um
+      // corrompia o outro).
       if (!ty->is_packed)
         bits = align_to(bits, mem->align * 8);
+      else
+        bits = align_to(bits, 8);
       mem->offset = bits / 8;
       bits += mem->ty->size * 8;
     }

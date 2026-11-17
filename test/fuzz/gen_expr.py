@@ -21,6 +21,9 @@ Como evitar UB (C11) sem perder cobertura de operações com sinal:
     <<= só em variáveis unsigned de 32 bits
   * ++/-- só em variáveis unsigned ou menores que int
   * índices de array mascarados: a[(e) & 7]
+  * structs por valor: struct T copiada, passada e devolvida por mix() (pura),
+    literais compostos; ponteiros para escalares (parâmetros T *p usados
+    como (*p)) e para arrays globais
   * chamadas só em comandos (v = f(...); com v escalar, sem índice), nunca
     dentro de expressões (a
     ordem de avaliação dos operandos não é especificada e as funções
@@ -37,6 +40,8 @@ import sys
 TYPES = ["int", "unsigned", "char", "signed char", "unsigned char", "short", "unsigned short"]
 UNSIGNED = {"unsigned", "unsigned char", "unsigned short"}
 ARR_LEN = 8
+STRUCT_FIELDS = [("a", "char"), ("b", "short"), ("c", "int"), ("d", "unsigned"), ("e", "unsigned char")]
+REF_TYPES = [ty for _, ty in STRUCT_FIELDS]
 MAX_FUNC_COST = 3000
 
 
@@ -203,8 +208,11 @@ class Gen:
                 self.emit("%s%s;" % (v.name, r.choice(["++", "--"])) if r.random() < 0.5
                           else "%s%s;" % (r.choice(["++", "--"]), v.name))
             return loop_mult
-        if c < 0.55:
+        if c < 0.52:
             return self.call_stmt(scope, loop_mult, cost)
+        if c < 0.55:
+            self.struct_stmt(scope)
+            return loop_mult
         if c < 0.67:
             e, _ = self.expr(scope, 3)
             self.emit("if (%s) {" % e)
@@ -277,20 +285,38 @@ class Gen:
         name, ret, params, fcost = r.choice(self.funcs)
         if cost + loop_mult * (fcost + 1) > MAX_FUNC_COST:
             return 0
-        args = []
-        for ty, _, is_ptr in params:
-            if is_ptr:
-                arrs = [g for g in self.globals if g.is_array and g.ty == ty]
-                args.append(r.choice(arrs).name)
-            else:
-                e, _ = self.expr(scope, 2)
-                args.append(e)
+        args = [self.arg(scope, ty, pk) for ty, _, pk in params]
         # O destino é um escalar sem índice: em `a[g & 7] = f()` a leitura
         # de g (índice) e a chamada (que pode escrever em g) não têm ordem
         # especificada; gcc e kscc podem divergir sem bug.
         lv = r.choice([v for v in scope if v.writable and not v.is_array]).name
         self.emit("%s = %s(%s);" % (lv, name, ", ".join(args)))
         return loop_mult * (fcost + 1)
+
+    def arg(self, scope, ty, pk):
+        r = self.r
+        if pk == "arr":
+            return r.choice([g for g in self.globals if g.is_array and g.ty == ty]).name
+        if pk == "ref":
+            # sempre há candidato: os campos de gs cobrem os tipos de REF_TYPES
+            return "&" + r.choice([v for v in scope if v.writable and not v.is_array and v.ty == ty]).name
+        return self.expr(scope, 2)[0]
+
+    def struct_stmt(self, scope):
+        """Cópia, passagem e retorno de struct por valor (mix é pura)."""
+        r = self.r
+        dst = r.choice(["lt", "gt[0]", "gt[1]"])
+        src = r.choice(["lt", "gt[0]", "gt[1]"])
+        c = r.random()
+        if c < 0.4:
+            e, _ = self.expr(scope, 2)
+            self.emit("%s = mix(%s, %s);" % (dst, src, e))
+        elif c < 0.7:
+            self.emit("%s = %s;" % (dst, src))
+        else:
+            vals = [self.expr(scope, 1)[0] for _ in range(5)]
+            self.emit("%s = (struct T){(char)(%s), (short)(%s), %s, %s, (unsigned char)(%s)};"
+                      % (dst, vals[0], vals[1], vals[2], vals[3], vals[4]))
 
     def block(self, scope, depth, loop_mult, in_loop, cost, max_stmts=4):
         k = 0
@@ -317,8 +343,21 @@ class Gen:
             self.out.append("static %s %s[%d] = {%s};" % (ty, name, ARR_LEN, vals))
             self.globals.append(Var(name, ty, is_array=True))
         self.out.append("static struct { char a; short b; int c; unsigned d; unsigned char e; } gs = {1, 2, 3, 4u, 5};")
-        for f, ty in [("a", "char"), ("b", "short"), ("c", "int"), ("d", "unsigned"), ("e", "unsigned char")]:
+        for f, ty in STRUCT_FIELDS:
             self.globals.append(Var("gs." + f, ty))
+        self.out.append("struct T { char a; short b; int c; unsigned d; unsigned char e; };")
+        self.out.append("static struct T gt[2] = {{1, 2, 3, 4u, 5}, {-1, -2, -3, 0xFFFFFFFFu, 250}};")
+        self.out.append("static struct T mix(struct T x, int k) {")
+        self.out.append("  x.a ^= (char)k;")
+        self.out.append("  x.b = (short)(x.b + (k & 255));")
+        self.out.append("  x.c = (int)((unsigned)x.c * 3u + (unsigned)k);")
+        self.out.append("  x.d -= (unsigned)k;")
+        self.out.append("  x.e |= (unsigned char)k;")
+        self.out.append("  return x;")
+        self.out.append("}")
+        for i in range(2):
+            for f, ty in STRUCT_FIELDS:
+                self.globals.append(Var("gt[%d].%s" % (i, f), ty))
         self.out.append("")
 
     def gen_func(self, idx):
@@ -326,24 +365,34 @@ class Gen:
         name = "f%d" % idx
         ret = r.choice(["int", "unsigned", "short", "unsigned char"])
         params = []
-        for p in range(r.choice([0, 1, 2, 2, 3, 4, 5, 6])):
-            if r.random() < 0.15:
+        for p in range(r.choice([0, 1, 2, 2, 3, 4, 5, 6, 8])):
+            c = r.random()
+            if c < 0.12:
                 ty = r.choice(["int", "unsigned", "char", "unsigned short"])
-                params.append((ty, "p%d" % p, True))
+                params.append((ty, "p%d" % p, "arr"))
+            elif c < 0.22:
+                params.append((r.choice(REF_TYPES), "p%d" % p, "ref"))
             else:
-                params.append((r.choice(TYPES), "p%d" % p, False))
-        decl = ", ".join(("%s *%s" % (t, n)) if ptr else ("%s %s" % (t, n)) for t, n, ptr in params) or "void"
+                params.append((r.choice(TYPES), "p%d" % p, "val"))
+        decl = ", ".join(("%s *%s" % (t, n)) if pk != "val" else ("%s %s" % (t, n))
+                         for t, n, pk in params) or "void"
         self.out.append("static %s %s(%s) {" % (ret, name, decl))
         self.ind = 1
         scope = list(self.globals)
-        for t, n, ptr in params:
-            scope.append(Var(n, t, is_array=ptr))
+        for t, n, pk in params:
+            if pk == "ref":
+                scope.append(Var("(*%s)" % n, t))
+            else:
+                scope.append(Var(n, t, is_array=(pk == "arr")))
         for l in range(r.randint(1, 4)):
             ty = r.choice(TYPES)
             ln = "l%d" % l
             e, _ = self.expr(scope, 2)
             self.emit("%s %s = %s;" % (ty, ln, e))
             scope.append(Var(ln, ty))
+        self.emit("struct T lt = gt[%d];" % (idx & 1))
+        for f, ty in STRUCT_FIELDS:
+            scope.append(Var("lt." + f, ty))
         cost = self.block(scope, 3, 1, False, 0, max_stmts=6)
         e, _ = self.expr(scope, 3)
         self.emit("return %s;" % e)
@@ -360,11 +409,11 @@ class Gen:
         for name, ret, params, _ in self.funcs:
             for _ in range(r.randint(1, 3)):
                 args = []
-                for ty, _, is_ptr in params:
-                    if is_ptr:
-                        args.append(r.choice([g for g in self.globals if g.is_array and g.ty == ty]).name)
-                    else:
+                for ty, _, pk in params:
+                    if pk == "val":
                         args.append(self.const()[0])
+                    else:
+                        args.append(self.arg(self.globals, ty, pk))
                 self.emit("h = h * 31u + (unsigned)%s(%s);" % (name, ", ".join(args)))
             self.emit('ks_put_kx("%s", h);' % name)
         for g in self.globals:

@@ -24,8 +24,8 @@ SEED0=${2:-1000}
 OUT=build/fuzz/csmith
 RT=build/fuzz/csmith_rt
 FAILDIR=test/fuzz/failures
-CSMITH_OPTS="--no-float --no-longlong --no-math64 --no-packed-struct --no-volatiles
-  --no-volatile-pointers --no-bitfields --no-argc --max-funcs 5 --max-block-size 4"
+CSMITH_OPTS=${CSMITH_OPTS:-"--no-float --no-longlong --no-math64 --no-packed-struct --no-volatiles
+  --no-volatile-pointers --no-bitfields --no-argc --max-funcs 5 --max-block-size 4"}
 
 if ! command -v csmith > /dev/null || [ ! -f /usr/include/csmith/safe_math.h ]; then
   echo "run_csmith: csmith/libcsmith-dev nao encontrados, pulando"

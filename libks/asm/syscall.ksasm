@@ -1,0 +1,199 @@
+; syscall.ksasm — wrappers das syscalls da KSVM (doc 05 §1, números no
+; doc 06 §3 da ksvm2). Protótipos em libks/include/ksvm/syscall.h.
+;
+; ABI (doc 02 §3): argumentos em r1-r4, retorno em r1, r1-r15 livres,
+; fp/sp preservados. Os argumentos de uma syscall vão em r1-r6 e nenhuma
+; usada aqui tem mais de 3, então os registradores já estão no lugar: cada
+; wrapper é "syscall N" seguido do tratamento de erro.
+;
+; Erro: a VM devolve r1 = -1 e o código KSVM_ERR_* em r2. O tratamento
+; comum (__ks_sys_ret) copia r2 para a global ks_errno (errno.h) SÓ
+; quando r2 != 0: em C, nenhuma função da biblioteca zera errno (C11
+; 7.5p3), e o valor de errno.h é o próprio KSVM_ERR_* (ENOSYS = 1, ...).
+; Exceções, que não passam por __ks_sys_ret porque r2 não é erro:
+; MEM_INFO (r2 = tamanho da RAM), YIELD (não toca r1/r2) e EXIT/ABORT
+; (não retornam).
+;
+; Regra do link com seleção por uso (src/link.c): cada label global é um
+; bloco independente, então nenhum wrapper pode "cair" no seguinte; todos
+; terminam em ret, jmp ou halt.
+
+        .text
+
+; Tratamento comum: r2 != 0 -> ks_errno = r2. Preserva r1 (o resultado).
+        .global __ks_sys_ret
+__ks_sys_ret:
+        cmpi    r2, 0
+        beq     __ks_sys_ret.ok
+        la      r5, ks_errno
+        stw     [r5], r2
+__ks_sys_ret.ok:
+        ret
+
+; ---- Grupo 0: núcleo ---------------------------------------------------
+
+; _Noreturn void ks_sys_exit(int code)
+        .global ks_sys_exit
+ks_sys_exit:
+        syscall EXIT
+        halt
+
+; int ks_sys_caps(int num): 1 se a syscall `num` é tratada pelo núcleo da
+; VM. Syscalls encaminhadas ao HAL (grupos 3 e 4) respondem 0 mesmo quando
+; existem: para elas, chame e teste -1/ENOSYS.
+        .global ks_sys_caps
+ks_sys_caps:
+        syscall CAPS
+        jmp     __ks_sys_ret
+
+; unsigned ks_sys_version(void): major<<16 | minor<<8 | patch
+        .global ks_sys_version
+ks_sys_version:
+        syscall VERSION
+        jmp     __ks_sys_ret
+
+; void ks_sys_yield(void): devolve o controle ao host
+        .global ks_sys_yield
+ks_sys_yield:
+        syscall YIELD
+        ret
+
+; _Noreturn void ks_sys_abort(int code): fault TRAP com o código
+        .global ks_sys_abort
+ks_sys_abort:
+        syscall ABORT
+        halt
+
+; ---- Grupo 1: console --------------------------------------------------
+
+; int ks_sys_putc(int c): 0 ou -1
+        .global ks_sys_putc
+ks_sys_putc:
+        syscall PUTC
+        jmp     __ks_sys_ret
+
+; int ks_sys_getc(void): byte, ou -1 (ks_errno = EAGAIN sem dado agora,
+; EKSEOF no fim da entrada, ENOSYS sem console)
+        .global ks_sys_getc
+ks_sys_getc:
+        syscall GETC
+        jmp     __ks_sys_ret
+
+; int ks_sys_puts(const char *p, unsigned len): bytes escritos ou -1
+        .global ks_sys_puts
+ks_sys_puts:
+        syscall PUTS
+        jmp     __ks_sys_ret
+
+; int ks_sys_gets(char *p, unsigned max): bytes lidos até '\n' (incluso)
+; ou max; 0 se nada disponível; -1 no fim da entrada
+        .global ks_sys_gets
+ks_sys_gets:
+        syscall GETS
+        jmp     __ks_sys_ret
+
+; ---- Grupo 2: tempo ----------------------------------------------------
+
+; unsigned ks_sys_millis(void)
+        .global ks_sys_millis
+ks_sys_millis:
+        syscall MILLIS
+        jmp     __ks_sys_ret
+
+; int ks_sys_sleep_ms(unsigned ms)
+        .global ks_sys_sleep_ms
+ks_sys_sleep_ms:
+        syscall SLEEP_MS
+        jmp     __ks_sys_ret
+
+; unsigned ks_sys_micros(void): opcional (HAL); -1/ENOSYS se ausente
+        .global ks_sys_micros
+ks_sys_micros:
+        syscall MICROS
+        jmp     __ks_sys_ret
+
+; ---- Grupo 3: arquivos (desktop) ---------------------------------------
+
+; int ks_sys_open(const char *path, unsigned len, int flags): fd ou -1
+        .global ks_sys_open
+ks_sys_open:
+        syscall OPEN
+        jmp     __ks_sys_ret
+
+; int ks_sys_close(int fd)
+        .global ks_sys_close
+ks_sys_close:
+        syscall CLOSE
+        jmp     __ks_sys_ret
+
+; int ks_sys_read(int fd, void *p, unsigned len)
+        .global ks_sys_read
+ks_sys_read:
+        syscall READ
+        jmp     __ks_sys_ret
+
+; int ks_sys_write(int fd, const void *p, unsigned len)
+        .global ks_sys_write
+ks_sys_write:
+        syscall WRITE
+        jmp     __ks_sys_ret
+
+; int ks_sys_seek(int fd, int offset, int whence)
+        .global ks_sys_seek
+ks_sys_seek:
+        syscall SEEK
+        jmp     __ks_sys_ret
+
+; ---- Grupo 4: GPIO (MCU) -----------------------------------------------
+
+; int ks_sys_pin_mode(int pin, int mode)
+        .global ks_sys_pin_mode
+ks_sys_pin_mode:
+        syscall PIN_MODE
+        jmp     __ks_sys_ret
+
+; int ks_sys_pin_write(int pin, int value)
+        .global ks_sys_pin_write
+ks_sys_pin_write:
+        syscall PIN_WRITE
+        jmp     __ks_sys_ret
+
+; int ks_sys_pin_read(int pin)
+        .global ks_sys_pin_read
+ks_sys_pin_read:
+        syscall PIN_READ
+        jmp     __ks_sys_ret
+
+; int ks_sys_analog_read(int channel): 0..1023 ou -1
+        .global ks_sys_analog_read
+ks_sys_analog_read:
+        syscall ANALOG_READ
+        jmp     __ks_sys_ret
+
+; int ks_sys_pwm_write(int pin, int duty): duty 0..255
+        .global ks_sys_pwm_write
+ks_sys_pwm_write:
+        syscall PWM_WRITE
+        jmp     __ks_sys_ret
+
+; ---- Grupo 5: memória --------------------------------------------------
+
+; void ks_sys_mem_info(struct ks_mem_info *mi)
+; struct ks_mem_info { unsigned ram_base, ram_size, heap_start,
+;                      stack_limit; } — a ordem dos campos é a dos
+; registradores r1-r4 devolvidos pela VM. Não falha e não toca ks_errno.
+        .global ks_sys_mem_info
+ks_sys_mem_info:
+        mov     r5, r1
+        syscall MEM_INFO
+        stw     [r5 + 0], r1
+        stw     [r5 + 4], r2
+        stw     [r5 + 8], r3
+        stw     [r5 + 12], r4
+        ret
+
+; unsigned ks_sys_random(void): 32 bits pseudoaleatórios
+        .global ks_sys_random
+ks_sys_random:
+        syscall RANDOM
+        jmp     __ks_sys_ret

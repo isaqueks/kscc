@@ -229,6 +229,42 @@ $kscc -o $tmp/foo $tmp/cm.c
 $KSVM $tmp/foo
 check 'libks: simbolo comum compartilhado com o usuario'
 
+# Seleção por uso sobre uma libks feita à mão (KSCC_LIBDIR): f "cai" em
+# g (sem ret no fim do bloco), então g entra junto; o dado em .rodata só
+# é citado por "la" dentro de g; h não é usado e fica de fora.
+mkdir -p $tmp/lib
+cp $(dirname $kscc)/libks/crt0.ksasm $tmp/lib/
+cat > $tmp/lib/libks.kso <<'EOT'
+        .text
+        .global exit
+exit:
+        syscall EXIT
+        halt
+        .global f
+f:
+        li      r1, 30
+        .global g
+g:
+        la      r2, g.dado
+        ldw     r2, [r2]
+        add     r1, r1, r2
+        ret
+        .rodata
+g.dado: .word 12
+        .text
+        .global h
+h:
+        call    nao_existe
+        ret
+EOT
+echo 'int f(void); int main() { return f(); }' > $tmp/ft.c
+KSCC_LIBDIR=$tmp/lib $kscc -o $tmp/foo $tmp/ft.c
+$KSVM $tmp/foo
+[ "$?" = 42 ]
+check 'selecao por uso: bloco que cai no seguinte, .rodata por la'
+! KSCC_LIBDIR=$tmp/lib $kscc -Wl,--no-gc-sections -o $tmp/foo $tmp/ft.c 2> /dev/null
+check 'selecao por uso: bloco nao usado fica de fora'
+
 # Sem a libks: mensagem clara
 echo 'int main() { return 0; }' > $tmp/nolib.c
 ! KSCC_LIBDIR=$tmp/nada $kscc -o $tmp/foo $tmp/nolib.c 2> $tmp/err

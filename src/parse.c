@@ -25,6 +25,7 @@ typedef struct {
   Type *type_def;
   Type *enum_ty;
   int64_t enum_val; // kscc: int64_t para guardar valores de unsigned int
+  bool enum_uint;   // kscc: constante de tipo unsigned int (ver enum_specifier)
 } VarScope;
 
 // Represents a block scope.
@@ -827,13 +828,18 @@ static Type *enum_specifier(Token **rest, Token *tok) {
   //
   // kscc: o C11 6.7.2.2p2 exige valores que caibam em int. Como o gcc
   // (extensão aceita sem aviso em -Wall), um valor entre INT_MAX + 1 e
-  // UINT_MAX (`F = 1u << 31`) faz do enum e de todas as suas constantes
-  // unsigned int; antes o valor virava um int negativo em silêncio e
-  // `F > 0` era falso. Valores negativos junto com esses não cabem em 32
-  // bits: erro.
+  // UINT_MAX (`F = 1u << 31`) faz de todas as constantes do enum unsigned
+  // int; antes o valor virava um int negativo em silêncio e `F > 0` era
+  // falso. Valores negativos junto com esses não cabem em 32 bits: erro.
+  //
+  // O tipo enumerado em si é unsigned int quando não há valor negativo,
+  // como no gcc e no clang (a escolha é da implementação, C11 6.7.2.2p4):
+  // com ele signed, `enum Cor c : 2` guardando 3 era lido como -1, e
+  // `x.c == 3` dava falso.
   int i = 0;
   int64_t val = 0;
   bool has_neg = false, has_big = false;
+  VarScope **consts = NULL;
   while (!consume_end(rest, tok)) {
     if (i++ > 0)
       tok = skip(tok, ",");
@@ -856,10 +862,14 @@ static Type *enum_specifier(Token **rest, Token *tok) {
     sc->enum_ty = ty;
     sc->enum_val = val;
     val++;
+    consts = realloc(consts, sizeof(VarScope *) * i);
+    consts[i - 1] = sc;
   }
 
-  if (has_big)
-    ty->is_unsigned = true;
+  ty->is_unsigned = !has_neg;
+  for (int j = 0; j < i; j++)
+    consts[j]->enum_uint = has_big;
+  free(consts);
 
   if (tag)
     push_tag_scope(tag, ty);
@@ -3451,7 +3461,7 @@ static Node *primary(Token **rest, Token *tok) {
         return new_var_node(sc->var, tok);
       if (sc->enum_ty) {
         Node *node = new_num(sc->enum_val, tok);
-        if (sc->enum_ty->is_unsigned)
+        if (sc->enum_uint)
           node->ty = ty_uint; // kscc: ver enum_specifier
         return node;
       }

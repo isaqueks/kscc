@@ -12,8 +12,7 @@
 # gcc -m32. Plataforma sem toolchain/simulador é pulada com aviso.
 #
 # Os wrappers de GPIO/tempo (ks_sys_pin_*, ks_sys_sleep_ms, ks_sys_millis,
-# ks_sys_caps) vêm de test/embedded/gpio.ksasm enquanto o runtime do kscc
-# não os tiver (o kscc aceita .ksasm na linha de comando e concatena).
+# ks_sys_caps) são os da libks (libks/asm/syscall.ksasm), ligada por padrão.
 #
 # Variáveis: KSCC, KSVM2_HOME (padrão ../ksvm2), EMB_STACK (pilha do guest,
 # padrão 768: no AVR .data + .bss + pilha cabem em 1 KB).
@@ -43,12 +42,6 @@ expected() {
   esac
 }
 
-# gpio.ksasm só se o runtime ainda não define os wrappers.
-EXTRA=test/embedded/gpio.ksasm
-if grep -qs '^ks_sys_pin_mode:' lib/libks.kso lib/minirt.ksasm; then
-  EXTRA=
-fi
-
 fail=0
 failed=()
 report=()
@@ -62,7 +55,7 @@ note_fail() {
 build() { # prog plataforma -> $OUT/prog-plat.ksx
   local p=$1 plat=$2
   "$KSCC" -Itest -DKS_PLATFORM="\"$plat\"" -Wl,--stack=$EMB_STACK \
-    -o "$OUT/$p-$plat.ksx" "test/embedded/$p.c" $EXTRA 2> "$OUT/$p-$plat.cerr"
+    -o "$OUT/$p-$plat.ksx" "test/embedded/$p.c" 2> "$OUT/$p-$plat.cerr"
 }
 
 # --- 1. desktop: ksvm com a RAM do AVR -------------------------------------
@@ -117,6 +110,10 @@ run_platform() {
       :
     else
       note_fail "$p/$plat: UART sem a saida esperada (log em $OUT/$p-$plat.log)"
+    fi
+    # o simavr modela o PORTB: a leitura de volta tem de acompanhar a escrita
+    if [ "$p-$plat" = blink-AVR ] && ! grep -q 'blink levels 101010' "$OUT/$p-$plat.log"; then
+      note_fail "$p/$plat: leitura do pino nao acompanhou a escrita (log em $OUT/$p-$plat.log)"
     fi
     local uart
     uart=$(grep -v '^$' "$OUT/$p-$plat.log" | grep -v 'Loaded\|^SIMAVR\|^avr_\|firmware' | head -3 | tr '\n' '|')

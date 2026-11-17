@@ -72,6 +72,7 @@ int main() {
   EQ(32767, RAND_MAX);
   EQ(1, ENOSYS);
   EQ(5, EAGAIN);
+  EQ(1, EDOM != EILSEQ && EILSEQ != ERANGE && EDOM != ERANGE);  // C11 7.5p2
   EQ(1, stdin != stdout && stdout != stderr && stdin != 0);
   return 0;
 }

@@ -186,6 +186,12 @@ echo "unitários:         $unit_pass passaram, $unit_fail falharam"
 echo "exemplos:          $example_pass passaram, $example_fail falharam"
 echo "suite do chibicc:  $chibicc_pass passaram, $chibicc_fail falharam, $skip pulados (ver $SKIPFILE)"
 
+# Nenhum teste encontrado (filtro sem casamento, diretório errado) não é
+# sucesso.
+if [ $((pass + fail + skip)) -eq 0 ]; then
+  red "nenhum teste rodou"
+  exit 1
+fi
 if [ $fail -ne 0 ]; then
   red "FALHAS: ${failed[*]}"
   exit 1

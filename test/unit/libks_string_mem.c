@@ -36,6 +36,21 @@ int main() {
       }
     }
 
+  // memmove grande e alinhado (o caminho de palavras de memcpy), com
+  // sobreposição de 4 bytes nos dois sentidos
+  static unsigned char big[300];
+  for (int i = 0; i < 300; i++)
+    big[i] = i;
+  memmove(big + 4, big, 290);
+  for (int i = 0; i < 290; i++)
+    EQ(i & 0xFF, big[i + 4]);
+  for (int i = 0; i < 300; i++)
+    big[i] = i;
+  memmove(big, big + 4, 290);
+  for (int i = 0; i < 290; i++)
+    EQ((i + 4) & 0xFF, big[i]);
+  EQ(290 & 0xFF, big[290]);  // depois do fim, intacto
+
   // memset com valor > 255 usa só o byte baixo; desalinhado
   for (int off = 0; off < 4; off++) {
     memset(a, 0, 64);

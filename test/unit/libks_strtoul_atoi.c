@@ -20,6 +20,20 @@ int main() {
   EQ(-5, (int)strtoul("-5", &end, 10));
   EQ(0, errno);
   EQ(0, (int)strtoul("x", &end, 10));
+  // A magnitude estoura antes da negação: ERANGE e ULONG_MAX
+  EQ((int)ULONG_MAX, (int)strtoul("-4294967296", &end, 10));
+  EQ(ERANGE, errno);
+  EQ(0, *end);
+  errno = 0;
+  EQ(1, (int)strtoul("-4294967295", &end, 10));  // -(2^32 - 1) = 1
+  EQ(0, errno);
+
+  // strtol: o menor long em hexadecimal, com sinal e prefixo
+  EQ(LONG_MIN, strtol("-0x80000000", &end, 16));
+  EQ(0, errno);
+  EQ(0, strtol("-0", &end, 10));
+  EQ(31, strtol(" \v\f\r+0x1f", &end, 0));
+  EQ(0, *end);
 
   EQ(42, atoi("42"));
   EQ(-42, atoi("  -42abc"));

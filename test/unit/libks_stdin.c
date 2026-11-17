@@ -28,6 +28,12 @@ int main() {
   EQ((int)line, (int)fgets(line, sizeof(line), stdin));
   STR_EQ("linha um\n", line);
 
+  // n = 1 só cabe o '\0' (nada é lido); n <= 0 é erro
+  buf[0] = 'X';
+  EQ((int)buf, (int)fgets(buf, 1, stdin));
+  EQ(0, buf[0]);
+  EQ(0, (int)fgets(buf, 0, stdin));
+
   // fgets lê no máximo n-1 bytes; o resto fica para a próxima
   fgets(buf, 5, stdin);
   STR_EQ("0123", buf);

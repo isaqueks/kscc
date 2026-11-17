@@ -111,6 +111,12 @@ done
 
 echo
 echo "diferencial: $pass passaram, $fail falharam"
+# Nenhum teste encontrado (filtro sem casamento, diretório errado) não é
+# sucesso.
+if [ $((pass + fail)) -eq 0 ]; then
+  red "nenhum teste rodou"
+  exit 1
+fi
 if [ $fail -ne 0 ]; then
   red "FALHAS: ${failed[*]}"
   exit 1

@@ -14,7 +14,7 @@
 #   tools/run_all_tests.sh [caminho/do/kscc]
 #
 # Mostra um resumo e sai com código != 0 se alguma camada falhar. O kscc é
-# construído antes (make). Variáveis: KSVM2_HOME (padrão ../ksvm2),
+# construído antes, com a libks (make). Variáveis: KSVM2_HOME (padrão ../ksvm2),
 # FUZZ_N, CSMITH_N.
 
 cd "$(dirname "$0")/.." || exit 2
@@ -29,7 +29,8 @@ LOGDIR=build/test-all
 mkdir -p "$LOGDIR"
 
 if [ "$KSCC" = build/kscc ]; then
-  make -s build/kscc || exit 2
+  # a libks também: ela é compilada pelo kscc e fica velha se ele mudou
+  make -s --no-print-directory build/kscc libks || exit 2
 fi
 
 names=()

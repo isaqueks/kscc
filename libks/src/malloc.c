@@ -269,6 +269,10 @@ void *realloc(void *p, size_t n) {
 
   Header *h = header_of(p);
   check_block(h);
+#ifdef KS_MALLOC_DEBUG
+  if (is_free(h))
+    corrupt("realloc de bloco livre");
+#endif
   size_t need = block_for(n);
   size_t have = block_size(h);
   if (!need) {

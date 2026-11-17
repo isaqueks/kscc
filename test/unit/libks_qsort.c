@@ -1,6 +1,7 @@
 // qsort com comparadores diferentes (crescente, decrescente, structs por
-// campo, strings, elementos de 3 bytes), tamanhos 0/1/2 e muitos
-// repetidos; bsearch achando e não achando.
+// campo, strings, elementos de 3 e de 100 bytes), tamanhos 0/1/2, muitos
+// repetidos e um comparador inconsistente (não pode escrever fora do
+// vetor nem perder elementos); bsearch achando e não achando.
 #include <stdlib.h>
 #include <string.h>
 #include "minirt.h"
@@ -31,6 +32,23 @@ typedef struct {
 
 static int by_tri(const void *a, const void *b) {
   return memcmp(a, b, 3);
+}
+
+typedef struct {
+  int k;
+  char pad[96];
+} Big;
+
+static int by_big(const void *a, const void *b) {
+  return ((const Big *)a)->k - ((const Big *)b)->k;
+}
+
+static unsigned chaos = 7;
+static int chaotic(const void *a, const void *b) {
+  (void)a;
+  (void)b;
+  chaos = chaos * 1103515245u + 12345u;
+  return (int)((chaos >> 16) % 3) - 1;
 }
 
 static int calls;
@@ -110,6 +128,35 @@ int main() {
     EQ(1, memcmp(&t[i - 1], &t[i], 3) < 0);
   for (int i = 0; i < 7; i++)
     EQ(0xAA, t[i].k[2]);
+
+  // Elementos grandes (100 bytes): a troca leva o elemento inteiro
+  static Big big[20];
+  for (int i = 0; i < 20; i++) {
+    big[i].k = (i * 7) % 20;
+    memset(big[i].pad, big[i].k, sizeof(big[i].pad));
+  }
+  qsort(big, 20, sizeof(Big), by_big);
+  for (int i = 0; i < 20; i++) {
+    EQ(i, big[i].k);
+    for (int j = 0; j < (int)sizeof(big[i].pad); j++)
+      EQ(i, big[i].pad[j]);
+  }
+
+  // Comparador inconsistente (resultado aleatório): a ordem é qualquer,
+  // mas nada fora do vetor é tocado e os elementos continuam os mesmos
+  int g[1 + 60 + 1];
+  g[0] = 0x11111111;
+  g[61] = 0x22222222;
+  for (int i = 1; i <= 60; i++)
+    g[i] = i;
+  qsort(g + 1, 60, sizeof(int), chaotic);
+  EQ(0x11111111, g[0]);
+  EQ(0x22222222, g[61]);
+  int seen[61] = {0};
+  for (int i = 1; i <= 60; i++) {
+    EQ(1, g[i] >= 1 && g[i] <= 60);
+    EQ(0, seen[g[i]]++);
+  }
 
   // bsearch sobre o vetor ordenado
   for (int i = 0; i < 100; i++)

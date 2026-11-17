@@ -10,7 +10,9 @@ kscc [opções] arquivo.c ...          # compila, monta e "linka" → a.ksx
   -o <saida>
   -I <dir>  -D NAME[=val]  -U NAME  -include <arq>
   -nostdlib          não acrescenta crt0 nem libks
-  -L <dir>  -l<nome> bibliotecas .kso (libks fica em <prefixo>/lib/libks.kso)
+  -Wl,--stack=N      tamanho da pilha no cabeçalho .ksx (padrão 4096)
+  -Wl,--no-gc-sections  liga a libks inteira (padrão: só o que é referenciado)
+  (libks fica em build/libks/libks.kso ao lado do kscc que a compilou; $KSCC_LIBDIR troca)
   -g                 passa -g ao ksas (tabela de símbolos completa)
   -fverbose-asm      comentários com a linha C ao lado de cada bloco
   --ksas <caminho>   --ksvm <caminho>   (padrão: KSVM2_HOME ou PATH)
@@ -47,8 +49,10 @@ um formato de objeto relocável e um linker custaria mais que o resto do kscc. E
   `ksas` como label duplicado, com os dois arquivos de origem visíveis pelos comentários `; file`.
 - **Símbolos indefinidos**: o `ksas` acusa "símbolo não definido" com a linha. O driver traduz
   a mensagem para "referência indefinida a `f`" procurando a declaração no `.kso`.
-- **Código morto**: nada é removido (sem `--gc-sections`). A `libks` é pequena; se o tamanho
-  importar para o AVR, a fase 7 pode fazer eliminação por grafo de chamadas sobre o texto.
+- **Código morto** (implementado na fase 4): cada label global da `libks.kso` delimita um bloco;
+  o link inclui só os blocos alcançáveis a partir do código do usuário (referências em
+  `call`/`la`/`.word`/etc.). Uma definição do usuário vence a da libks. `hello.c` com `printf`
+  cai de 43 KB para 14 KB. `-Wl,--no-gc-sections` desliga.
 
 Limites: a concatenação cria uma única seção `.text` de até 16 MiB (limite do `ksas`). Muito
 além de qualquer programa de teste; para um projeto grande seria a hora de um linker real.

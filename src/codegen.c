@@ -732,7 +732,7 @@ static void gen_stmt(Node *node) {
 
       // [GNU] Case ranges: (x - begin) <= (end - begin), sem sinal.
       int32_t span = (int32_t)(uint32_t)(n->end - n->begin);
-      add_imm("r2", "r1", -begin);
+      add_imm("r2", "r1", (int32_t)(0u - (uint32_t)begin));
       println("  %s r2, %d", is_imm14(span) ? "cmpi" : "cmpl", span);
       println("  bls %s", n->label);
     }

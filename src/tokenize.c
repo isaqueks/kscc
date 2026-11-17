@@ -77,7 +77,9 @@ void warn_tok(Token *tok, char *fmt, ...) {
 
 // Consumes the current token if it matches `op`.
 bool equal(Token *tok, char *op) {
-  return memcmp(tok->loc, op, tok->len) == 0 && op[tok->len] == '\0';
+  // kscc: strncmp em vez de memcmp: o memcmp do chibicc lia `op` além do
+  // terminador quando o token é mais longo que `op` (acusado pelo ASan).
+  return strncmp(tok->loc, op, tok->len) == 0 && op[tok->len] == '\0';
 }
 
 // Ensure that the current token is `op`.
@@ -196,11 +198,12 @@ static int read_escaped_char(char **new_pos, char *p) {
     if (!isxdigit(*p))
       error_at(p, "invalid hex escape sequence");
 
-    int c = 0;
+    // kscc: acumula em unsigned (escapes longos estouravam int: UB no host).
+    unsigned c = 0;
     for (; isxdigit(*p); p++)
       c = (c << 4) + from_hex(*p);
     *new_pos = p;
-    return c;
+    return (int)c;
   }
 
   *new_pos = p + 1;

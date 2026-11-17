@@ -806,7 +806,9 @@ static Type *enum_specifier(Token **rest, Token *tok) {
 
     VarScope *sc = push_scope(name);
     sc->enum_ty = ty;
-    sc->enum_val = val++;
+    sc->enum_val = val;
+    // kscc: sem overflow com sinal no host depois de INT_MAX (UBSan).
+    val = (int)((unsigned)val + 1);
   }
 
   if (tag)

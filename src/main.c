@@ -807,6 +807,15 @@ int main(int argc, char **argv) {
 
     FileType type = get_file_type(input);
 
+    // kscc: assembly ou .kso vindo de stdin ("-") vai para um temporário,
+    // já que o ksas e o link leem arquivos.
+    if (!strcmp(input, "-") && (type == FILE_ASM || type == FILE_OBJ) &&
+        !opt_hash_hash_hash) {
+      char *tmp = create_tmpfile();
+      ks_copy_file("/dev/stdin", tmp);
+      input = tmp;
+    }
+
     // Handle .kso
     if (type == FILE_OBJ) {
       if (opt_c || opt_S || opt_E)
@@ -847,7 +856,7 @@ int main(int argc, char **argv) {
     if (opt_c) {
       char *tmp = create_tmpfile();
       run_cc1(argc, argv, input, tmp);
-      assemble(argv[0], tmp, input, output);
+      assemble(argv[0], tmp, format("%s(.ksasm)", input), output);
       continue;
     }
 
@@ -857,7 +866,9 @@ int main(int argc, char **argv) {
     char *tmp = create_tmpfile();
     run_cc1(argc, argv, input, tmp);
     strarray_push(&ld_args, tmp);
-    strarray_push(&ld_names, input);
+    // Linhas citadas pelo ksas são do assembly gerado (que tem comentários
+    // "; arquivo:linha" apontando para o C).
+    strarray_push(&ld_names, format("%s(.ksasm)", input));
   }
 
   if (ld_args.len > 0)

@@ -170,6 +170,23 @@ static int run_ksas(LinkOptions *o, char *input, char *output, char *errfile) {
 // forem os únicos erros, uma segunda passada com labels-esboço para eles
 // confirma que o resto da unidade monta. O .kso gravado não contém os
 // esboços.
+// Arquivo de validação: a unidade + uma instrução-esboço (o ksas recusa
+// imagem sem nenhuma instrução em .text, caso de uma unidade só com dados)
+// + labels-esboço para os símbolos externos.
+static char *write_check_file(char *text, StringArray *undef) {
+  char *tmp = create_tmpfile();
+  FILE *out = fopen(tmp, "w");
+  if (!out)
+    error("%s: %s", tmp, strerror(errno));
+  fputs(text, out);
+  fprintf(out, "\n; kscc: esbocos para validar a unidade isolada\n\t.text\n");
+  fprintf(out, "__kscc_check_stub:\n\thalt\n");
+  for (int i = 0; i < undef->len; i++)
+    fprintf(out, "%s:\n", undef->data[i]);
+  fclose(out);
+  return tmp;
+}
+
 void ks_check_unit(LinkOptions *o, char *path, char *display) {
   if (driver_dry_run()) {
     char *argv[] = {o->ksas, path, "-o", "/dev/null", NULL};
@@ -181,8 +198,10 @@ void ks_check_unit(LinkOptions *o, char *path, char *display) {
   PartArray parts = {0};
   parts_push(&parts, (Part){display, 1, count_lines(text) + 1});
 
+  StringArray undef = {0};
+  char *tmp = write_check_file(text, &undef);
   char *errfile = create_tmpfile();
-  if (run_ksas(o, path, "/dev/null", errfile) == 0)
+  if (run_ksas(o, tmp, "/dev/null", errfile) == 0)
     return;
 
   // Só símbolos indefinidos? Conta as linhas de erro que não são isso.
@@ -193,24 +212,14 @@ void ks_check_unit(LinkOptions *o, char *path, char *display) {
       other = true;
   free(errs);
 
-  StringArray undef = {0};
-  report_errors(errfile, path, &parts, &undef, other);
+  report_errors(errfile, tmp, &parts, &undef, other);
   if (other || undef.len == 0) {
     if (!other)
-      report_errors(errfile, path, &parts, &undef, true);
+      report_errors(errfile, tmp, &parts, &undef, true);
     exit(1);
   }
 
-  char *tmp = create_tmpfile();
-  FILE *out = fopen(tmp, "w");
-  if (!out)
-    error("%s: %s", tmp, strerror(errno));
-  fputs(text, out);
-  fprintf(out, "\n; kscc: esbocos para validar a unidade isolada\n\t.text\n");
-  for (int i = 0; i < undef.len; i++)
-    fprintf(out, "%s:\n", undef.data[i]);
-  fclose(out);
-
+  tmp = write_check_file(text, &undef);
   if (run_ksas(o, tmp, "/dev/null", errfile) != 0) {
     StringArray undef2 = {0};
     report_errors(errfile, tmp, &parts, &undef2, true);

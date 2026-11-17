@@ -1,5 +1,8 @@
-#define ASSERT(x, y) assert(x, y, #y)
+// kscc: ASSERT usa assert_eq (doc 05 §4, definida em common.c sobre a
+// libks); `assert` continua declarada porque literal.c a chama direto.
+#define ASSERT(x, y) assert_eq(x, y, #y)
 
+void assert_eq(int expected, int actual, const char *code);
 void assert(int expected, int actual, char *code);
 int printf(char *fmt, ...);
 int sprintf(char *buf, char *fmt, ...);
@@ -12,7 +15,3 @@ int vsprintf();
 long strlen(char *s);
 void *memcpy(void *dest, void *src, long n);
 void *memset(void *s, int c, long n);
-
-// kscc: printf só existe com a libks (fase 4); os testes terminam com
-// kscc_ok(), que imprime "OK" (test/chibicc/common.c).
-void kscc_ok(void);

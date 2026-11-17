@@ -42,6 +42,6 @@ int main() {
 
   ASSERT(1, ({ struct {int a; int b;} x; __builtin_types_compatible_p(typeof(x.a), typeof(x.b)); }));
 
-  kscc_ok(); // kscc: printf só na fase 4 (libks)
+  printf("OK\n");
   return 0;
 }

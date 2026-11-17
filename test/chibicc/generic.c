@@ -15,6 +15,6 @@ int main() {
   ASSERT(3, _Generic(100, long: 1, int *: 2, int: 3, unsigned: 4));
   ASSERT(4, _Generic(100u, long: 1, int *: 2, int: 3, unsigned: 4));
 
-  kscc_ok(); // kscc: printf só na fase 4 (libks)
+  printf("OK\n");
   return 0;
 }

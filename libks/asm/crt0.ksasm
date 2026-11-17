@@ -3,7 +3,9 @@
 ; do usuário e acrescenta ".entry _start" no rodapé.
 ;
 ; A ksvm2 não tem syscall para argc/argv: main recebe argc = 0, argv = 0.
-; O valor devolvido por main vira o código de saída (syscall EXIT).
+; Voltar de main equivale a chamar exit com o valor devolvido (C11
+; 5.1.2.2.3), então _start chama exit da libks, que roda os handlers de
+; atexit e descarrega o buffer de stdout antes da syscall EXIT.
 
         .text
         .global _start
@@ -11,5 +13,5 @@ _start:
         clr     r1                  ; argc = 0
         clr     r2                  ; argv = NULL
         call    main
-        syscall EXIT                ; r1 = valor de retorno de main
+        call    exit                ; r1 = valor de retorno de main
         halt                        ; não alcançado

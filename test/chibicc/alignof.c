@@ -51,6 +51,6 @@ int main() {
   ASSERT(0, ({ _Alignas(16) char x[17]; (unsigned long)&x % 16; }));
   ASSERT(0, ({ char c; _Alignas(16) char x[101]; c = 1; (unsigned long)&x % 16; }));
 
-  kscc_ok(); // kscc: printf só na fase 4 (libks)
+  printf("OK\n");
   return 0;
 }

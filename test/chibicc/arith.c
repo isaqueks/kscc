@@ -142,6 +142,6 @@ int main() {
   ASSERT(5, (long double)3+2.0);
 #endif
 
-  kscc_ok(); // kscc: printf só na fase 4 (libks)
+  printf("OK\n");
   return 0;
 }

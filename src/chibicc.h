@@ -483,8 +483,9 @@ int run_subprocess_capture(char **argv, char *errfile);
 
 typedef struct {
   char *ksas;      // caminho do ksas
-  char *prefix;    // diretório com include/ e lib/
-  bool nostdlib;   // sem crt0 e sem runtime
+  char *libdir;    // diretório com crt0.ksasm e libks.kso
+  bool nostdlib;   // sem crt0 e sem libks
+  bool no_gc;      // -Wl,--no-gc-sections: libks.kso inteira, sem seleção
   bool debug;      // -g para o ksas
   int stack_size;  // rodapé .stack
 } LinkOptions;

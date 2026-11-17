@@ -12,6 +12,6 @@ int main() {
   ASSERT(3, ({ MyInt x=3; x; }));
   ASSERT(16, ({ MyInt2 x; sizeof(x); }));
 
-  kscc_ok(); // kscc: printf só na fase 4 (libks)
+  printf("OK\n");
   return 0;
 }

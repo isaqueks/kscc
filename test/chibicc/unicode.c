@@ -99,6 +99,6 @@ int main() {
   ASSERT(3, ({ int あβ0¾=3; あβ0¾; }));
   ASSERT(5, ({ int $$$=5; $$$; }));
 
-  kscc_ok(); // kscc: printf só na fase 4 (libks)
+  printf("OK\n");
   return 0;
 }

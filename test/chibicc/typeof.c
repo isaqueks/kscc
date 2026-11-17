@@ -8,6 +8,6 @@ int main() {
   ASSERT(4, ({ typeof("foo") x; sizeof(x); }));
   ASSERT(12, sizeof(typeof(struct { int a,b,c; })));
 
-  kscc_ok(); // kscc: printf só na fase 4 (libks)
+  printf("OK\n");
   return 0;
 }

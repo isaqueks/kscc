@@ -3,9 +3,10 @@
 // Diferenças em relação ao chibicc (doc 04):
 //  - "assemble" valida a unidade com o ksas e grava o .kso, que é o próprio
 //    texto .ksasm (não há formato de objeto binário);
-//  - "link" é a concatenação crt0 + .kso + runtime + rodapé, montada pelo
-//    ksas em um .ksx (src/link.c);
-//  - caminhos de include: só -I e <prefixo>/include, nunca /usr/include;
+//  - "link" é a concatenação crt0 + .kso + libks (só o que é usado) +
+//    rodapé, montada pelo ksas em um .ksx (src/link.c);
+//  - caminhos de include: só -I, <prefixo>/libks/include e
+//    <prefixo>/include, nunca /usr/include;
 //  - opções de linker do host (-static, -shared, -L, -l, -Xlinker) saem.
 
 #include "chibicc.h"
@@ -36,6 +37,7 @@ static bool opt_c;
 static bool opt_cc1;
 static bool opt_hash_hash_hash;
 static bool opt_nostdlib;
+static bool opt_no_gc;
 static bool opt_g;
 static char *opt_MF;
 static char *opt_MT;
@@ -68,9 +70,11 @@ static void usage(int status) {
     "  -U NOME            remove macro\n"
     "  -include <arq>     inclui <arq> antes do fonte\n"
     "  -x c|assembler|none  tipo dos arquivos seguintes\n"
-    "  -nostdlib          nao acrescenta crt0 nem runtime no link\n"
+    "  -nostdlib          nao acrescenta crt0 nem libks no link\n"
     "  -g                 passa -g ao ksas (tabela de simbolos completa)\n"
     "  -Wl,--stack=N      tamanho da pilha do programa (padrao 4096)\n"
+    "  -Wl,--no-gc-sections  liga a libks inteira (padrao: so o que o\n"
+    "                     programa usa)\n"
     "  --ksas <caminho>   ksas a usar (padrao: $KSAS, $KSVM2_HOME/build/ksas)\n"
     "  -###               mostra os comandos sem executa-los\n"
     "  -M -MD -MMD -MF -MP -MT -MQ  dependencias para o make\n"
@@ -102,10 +106,20 @@ bool file_exists(char *path) {
   return !stat(path, &st);
 }
 
-// kscc: o "prefixo" é o diretório que contém include/ e lib/ (crt0 e
-// runtime). Procura subindo a partir do diretório do binário, o que cobre
-// build/kscc e build/asan/kscc dentro do repositório. $KSCC_PREFIX tem
-// precedência.
+// kscc: diretório do próprio executável.
+static char *self_dir(char *argv0) {
+  char *self = realpath("/proc/self/exe", NULL);
+  if (!self)
+    self = realpath(argv0, NULL);
+  if (!self)
+    self = strdup(argv0);
+  return dirname(self);
+}
+
+// kscc: o "prefixo" é o diretório que contém include/ (headers do
+// compilador) e libks/include/ (headers da libks). Procura subindo a
+// partir do diretório do binário, o que cobre build/kscc e
+// build/asan/kscc dentro do repositório. $KSCC_PREFIX tem precedência.
 static char *prefix_dir;
 
 static char *find_prefix(char *argv0) {
@@ -116,27 +130,35 @@ static char *find_prefix(char *argv0) {
   if (env && *env)
     return prefix_dir = env;
 
-  char *self = realpath("/proc/self/exe", NULL);
-  if (!self)
-    self = realpath(argv0, NULL);
-  if (!self)
-    self = strdup(argv0);
-
-  char *dir = dirname(strdup(self));
+  char *start = self_dir(argv0);
+  char *dir = start;
   for (int i = 0; i < 4; i++) {
     dir = dirname(strdup(dir));
-    if (file_exists(format("%s/lib/crt0.ksasm", dir)) &&
-        file_exists(format("%s/include/stddef.h", dir)))
+    if (file_exists(format("%s/include/stddef.h", dir)) &&
+        file_exists(format("%s/libks/include/stdio.h", dir)))
       return prefix_dir = dir;
   }
 
   // Fallback: <dir do binário>/.. mesmo sem os arquivos, para que as
   // mensagens de erro mostrem onde eles eram esperados.
-  return prefix_dir = dirname(dirname(strdup(self)));
+  return prefix_dir = dirname(strdup(start));
+}
+
+// kscc: diretório com crt0.ksasm e libks.kso, gerados por libks/Makefile
+// ao lado do compilador que os compilou: build/kscc usa build/libks e
+// build/asan/kscc usa build/asan/libks. $KSCC_LIBDIR tem precedência.
+static char *find_libdir(char *argv0) {
+  char *env = getenv("KSCC_LIBDIR");
+  if (env && *env)
+    return env;
+  return format("%s/libks", self_dir(argv0));
 }
 
 static void add_default_include_paths(char *argv0) {
-  // kscc: só os headers do próprio kscc; nunca /usr/include (LP64/glibc).
+  // kscc: só os headers do próprio kscc, depois dos -I: primeiro os da
+  // libks (stdio.h, ...), depois os do compilador (stddef.h, stdarg.h,
+  // ...). Nunca /usr/include (LP64/glibc).
+  strarray_push(&include_paths, format("%s/libks/include", find_prefix(argv0)));
   strarray_push(&include_paths, format("%s/include", find_prefix(argv0)));
 
   // Keep a copy of the standard include paths for -MMD option.
@@ -190,10 +212,16 @@ static char *quote_makefile(char *s) {
   return buf;
 }
 
-// kscc: -Wl,opção[,opção...]. Só --stack=N existe (rodapé .stack do link).
+// kscc: -Wl,opção[,opção...]. Existem --stack=N (rodapé .stack do link)
+// e --gc-sections/--no-gc-sections (seleção por uso da libks, src/link.c).
 static void parse_wl(char *arg) {
   char *s = strdup(arg + 4);
   for (char *opt = strtok(s, ","); opt; opt = strtok(NULL, ",")) {
+    if (!strcmp(opt, "--gc-sections") || !strcmp(opt, "--no-gc-sections")) {
+      opt_no_gc = !strcmp(opt, "--no-gc-sections");
+      continue;
+    }
+
     char *val = NULL;
     if (!strncmp(opt, "--stack=", 8))
       val = opt + 8;
@@ -739,8 +767,9 @@ static char *ksas_path(void) {
 static LinkOptions link_options(char *argv0) {
   LinkOptions o = {0};
   o.ksas = ksas_path();
-  o.prefix = find_prefix(argv0);
+  o.libdir = find_libdir(argv0);
   o.nostdlib = opt_nostdlib;
+  o.no_gc = opt_no_gc;
   o.debug = opt_g;
   o.stack_size = opt_stack;
   return o;

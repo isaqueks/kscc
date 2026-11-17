@@ -1,0 +1,14 @@
+; abort.ksasm — abort() da libks (doc 05 §1).
+;
+; `trap 1` para a VM com fault TRAP (o runner sai com 70 + código do
+; fault e mostra o pc). Não roda atexit nem descarrega stdout, como o
+; abort do C. Fica em assembly porque é a forma mais curta de parar a VM
+; de modo anormal; não retorna.
+;
+;   _Noreturn void abort(void)
+
+        .text
+        .global abort
+abort:
+        trap    1
+        halt                        ; não alcançado

@@ -14,6 +14,6 @@ int main() {
   { int volatile * volatile volatile x; }
   { auto ** restrict __restrict __restrict__ const volatile *x; }
 
-  kscc_ok(); // kscc: printf só na fase 4 (libks)
+  printf("OK\n");
   return 0;
 }

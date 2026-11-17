@@ -119,7 +119,7 @@ static Type *type_suffix(Token **rest, Token *tok, Type *ty);
 static Type *declarator(Token **rest, Token *tok, Type *ty);
 static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr);
 static void array_initializer2(Token **rest, Token *tok, Initializer *init, int i);
-static void struct_initializer2(Token **rest, Token *tok, Initializer *init, Member *mem);
+static void struct_initializer2(Token **rest, Token *tok, Initializer *init, Member *mem, bool first);
 static void initializer2(Token **rest, Token *tok, Initializer *init);
 static Initializer *initializer(Token **rest, Token *tok, Type *ty, Type **new_ty);
 static Node *lvar_initializer(Token **rest, Token *tok, Obj *var);
@@ -1095,7 +1095,10 @@ static void designation(Token **rest, Token *tok, Initializer *init) {
     Member *mem = struct_designator(&tok, tok, init->ty);
     designation(&tok, tok, init->children[mem->idx]);
     init->expr = NULL;
-    struct_initializer2(rest, tok, init, mem->next);
+    // kscc: aqui tok está na vírgula depois do valor designado (first =
+    // false); o chibicc tentava ler a vírgula como inicializador, e
+    // `{.b.y = 1, .a = 2}` dava "expected an expression".
+    struct_initializer2(rest, tok, init, mem->next, false);
     return;
   }
 
@@ -1235,8 +1238,7 @@ static void struct_initializer1(Token **rest, Token *tok, Initializer *init) {
 }
 
 // struct-initializer2 = initializer ("," initializer)*
-static void struct_initializer2(Token **rest, Token *tok, Initializer *init, Member *mem) {
-  bool first = true;
+static void struct_initializer2(Token **rest, Token *tok, Initializer *init, Member *mem, bool first) {
 
   for (; mem && !is_end(tok); mem = mem->next) {
     Token *start = tok;
@@ -1311,11 +1313,22 @@ static void initializer2(Token **rest, Token *tok, Initializer *init) {
       return;
     }
 
-    struct_initializer2(rest, tok, init, init->ty->members);
+    struct_initializer2(rest, tok, init, init->ty->members, true);
     return;
   }
 
   if (init->ty->kind == TY_UNION) {
+    // kscc: como para struct, `union U x = y;` com y union (faltava no
+    // chibicc, que tentava inicializar o primeiro membro com y).
+    if (!equal(tok, "{")) {
+      Node *expr = assign(rest, tok);
+      add_type(expr);
+      if (expr->ty->kind == TY_UNION) {
+        init->expr = expr;
+        return;
+      }
+    }
+
     union_initializer(rest, tok, init);
     return;
   }
@@ -1404,7 +1417,7 @@ static Node *create_lvar_init(Initializer *init, Type *ty, InitDesg *desg, Token
     return node;
   }
 
-  if (ty->kind == TY_UNION) {
+  if (ty->kind == TY_UNION && !init->expr) {
     Member *mem = init->mem ? init->mem : ty->members;
     InitDesg desg2 = {desg, 0, mem, NULL};
     return create_lvar_init(init->children[mem->idx], mem->ty, &desg2, tok);
@@ -1469,6 +1482,11 @@ static void write_buf(char *buf, uint64_t val, int sz) {
 
 static Relocation *
 write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int offset) {
+  // kscc: `struct T g = outra;` em escopo de arquivo não é constante; o
+  // chibicc deixava a variável zerada em silêncio.
+  if ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && init->expr)
+    error_tok(init->expr->tok, "initializer element is not constant");
+
   if (ty->kind == TY_ARRAY) {
     int sz = ty->base->size;
     for (int i = 0; i < ty->array_len; i++)

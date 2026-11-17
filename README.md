@@ -41,7 +41,7 @@ do Unix. `-Wl,--no-gc-sections` liga a `libks` inteira. Tamanhos do `.ksx`:
 |----------|------------:|-------------------:|
 | `int main(void) { return 0; }` | 475 | — |
 | `puts("oi")` | 2.524 | — |
-| `examples/hello.c` (`printf`) | 14.339 | 43.667 |
+| `examples/hello.c` (`printf`) | 14.563 | 43.891 |
 
 Exemplos em `examples/` (`hello`, `fizzbuzz`, `linked_list`, `strings`, `calc`), com a
 saída esperada no cabeçalho; `test/run.sh` executa todos.
@@ -58,7 +58,7 @@ assembly (`libks/asm/`). Especificação: `docs/05-libks.md`.
 | `stdlib.h` | `abs labs div ldiv atoi atol strtol strtoul rand srand exit _Exit abort atexit` (8 handlers) `qsort bsearch malloc calloc realloc free`, e a extensão `ks_heap_check()` |
 | `stdio.h` | `putchar getchar puts gets_s fgets fputs fputc putc fgetc getc fflush printf fprintf sprintf snprintf vprintf vfprintf vsprintf vsnprintf`; `stdin`/`stdout`/`stderr` são constantes |
 | `assert.h` | `assert` (falha: `arquivo:linha: assert(x) falhou` e saída com código 1) |
-| `errno.h` | `errno`; `ENOSYS EFAULT EINVAL EIO EAGAIN` são os próprios `KSVM_ERR_*`, mais `EKSEOF ENOMEM ERANGE EDOM` |
+| `errno.h` | `errno`; `ENOSYS EFAULT EINVAL EIO EAGAIN` são os próprios `KSVM_ERR_*`, mais `EKSEOF ENOMEM ERANGE EDOM EILSEQ` |
 | `ksvm/syscall.h` | `ks_sys_*` para todas as syscalls da KSVM (grupos 0 a 5) e `struct ks_mem_info` |
 | `ksvm/time.h` | `ks_millis`, `ks_sleep_ms` |
 | `ksvm/gpio.h` | `ks_pin_mode ks_pin_write ks_pin_read ks_analog_read ks_pwm_write` (−1 e `ENOSYS` sem GPIO) |
@@ -75,8 +75,8 @@ console. `getchar` espera (cedendo 1 ms por vez) quando ainda não há entrada.
 `malloc`: first-fit com lista de livres e coalescência dos vizinhos, cabeçalho de 8
 bytes, alinhamento 4, heap entre o fim do `.bss` e `stack_limit - 64` (syscall
 `MEM_INFO`). Com `make -C libks KS_MALLOC_DEBUG=1 KSCC=... OUT=...` os blocos liberados
-são pintados com `0xDD` e os cabeçalhos conferidos (free duplo, uso depois do free e
-cabeçalho corrompido chamam `abort`).
+são pintados com `0xDD` e os cabeçalhos conferidos (free duplo, `realloc` de bloco
+livre, uso depois do free e cabeçalho corrompido chamam `abort`).
 
 ## O que a `libks` não cobre
 

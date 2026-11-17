@@ -83,8 +83,8 @@ static void parse_flags(const char **fmt, Spec *sp) {
       sp->zero = 1;
     else if (c == '+')
       sp->sign = '+';
-    else if (c == ' ' && sp->sign != '+')
-      sp->sign = ' ';
+    else if (c == ' ')
+      sp->sign = sp->sign ? sp->sign : ' ';  // '+' vence ' '
     else if (c == '#')
       sp->alt = 1;
     else

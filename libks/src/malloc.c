@@ -110,44 +110,70 @@ static void check_block(Header *h) {
     corrupt("cabecalho do bloco anterior corrompido");
 }
 
-// Um bloco livre ainda cheio de 0xDD: ninguém escreveu nele depois do free.
-static void check_dead(Header *h) {
+// O pedaço de um bloco livre que malloc vai entregar ainda é 0xDD:
+// ninguém escreveu nele depois do free. Só os `need` primeiros bytes, para
+// o custo ser o da alocação e não o do bloco livre (que no começo é o
+// heap inteiro).
+static void check_dead(Header *h, size_t need) {
   unsigned char *p = (unsigned char *)h + MIN_BLOCK;
-  unsigned char *end = (unsigned char *)h + block_size(h);
+  unsigned char *end = (unsigned char *)h + need;
 
   for (; p < end; p++)
     if (*p != DEAD_BYTE)
       corrupt("bloco livre modificado depois do free");
 }
+
+// Preenche com 0xDD o que deixa de estar em uso ao liberar `h` (de
+// `size` bytes): a área útil do bloco se ela tinha dados (`dirty`), o
+// cabeçalho dele se o vizinho de trás o absorveu, e o cabeçalho e os elos
+// do vizinho da frente se ele foi absorvido. O resto dos vizinhos livres
+// já era 0xDD; não repintar mantém o custo proporcional ao que foi
+// liberado (o bloco livre do fim do heap pode ter quase toda a RAM).
+static void mark_dead(Header *h, size_t size, int dirty, int into_prev,
+                      Header *next_merged) {
+  char *start = into_prev ? (char *)h : (char *)h + MIN_BLOCK;
+  char *end = dirty ? (char *)h + size : (char *)h + MIN_BLOCK;
+
+  if (start < end)
+    memset(start, DEAD_BYTE, end - start);
+  if (next_merged)
+    memset(next_merged, DEAD_BYTE, MIN_BLOCK);
+}
 #else
 #define check_block(h) ((void)0)
-#define check_dead(h) ((void)0)
+#define check_dead(h, need) ((void)0)
+#define mark_dead(h, size, dirty, into_prev, next_merged) ((void)0)
 #endif
 
 // Marca o bloco como livre, junta com os vizinhos livres e põe na lista.
-static void release(Header *h) {
-  size_t size = block_size(h);
+// `dirty`: a área útil tinha dados (e não 0xDD; só importa na depuração).
+static void release(Header *h, int dirty) {
+  Header *orig = h;
+  size_t orig_size = block_size(h);
+  size_t size = orig_size;
   Header *n = next_block(h);
   Header *pv = prev_block(h);
 
   if (n && is_free(n)) {
     list_remove((FreeBlock *)n);
     size += block_size(n);
+  } else {
+    n = NULL;
   }
   if (pv && is_free(pv)) {
     list_remove((FreeBlock *)pv);
     size += block_size(pv);
     h = pv;
   }
-#ifdef KS_MALLOC_DEBUG
-  memset((char *)h + MIN_BLOCK, DEAD_BYTE, size - MIN_BLOCK);
-#endif
+  mark_dead(orig, orig_size, dirty, h != orig, n);
   set_block(h, size, FREE_BIT);
   list_insert((FreeBlock *)h);
 }
 
 // Reduz um bloco em uso para `need` bytes se a sobra formar um bloco.
-static void shrink(Header *h, size_t need) {
+// `dirty`: a sobra tinha dados (realloc encolhendo), e não só 0xDD
+// (bloco que acabou de sair da lista de livres).
+static void shrink(Header *h, size_t need, int dirty) {
   size_t size = block_size(h);
 
   if (size - need < MIN_BLOCK)
@@ -156,7 +182,7 @@ static void shrink(Header *h, size_t need) {
   set_block(h, need, 0);  // também grava rest->prev_size
   rest->size = size - need;
   set_block(rest, size - need, 0);
-  release(rest);
+  release(rest, dirty);
 }
 
 static int heap_init(void) {
@@ -173,7 +199,7 @@ static int heap_init(void) {
   Header *h = (Header *)heap_lo;
   h->prev_size = 0;
   h->size = heap_hi - heap_lo;
-  release(h);
+  release(h, 1);
   return 1;
 }
 
@@ -197,10 +223,10 @@ void *malloc(size_t n) {
     if (block_size(&b->h) < need)
       continue;
     check_block(&b->h);
-    check_dead(&b->h);
+    check_dead(&b->h, need);
     list_remove(b);
     set_block(&b->h, block_size(&b->h), 0);
-    shrink(&b->h, need);
+    shrink(&b->h, need, 0);
     return (char *)b + HDR_SIZE;
   }
   errno = ENOMEM;
@@ -216,7 +242,7 @@ void free(void *p) {
   if (is_free(h))
     corrupt("free duplo");
 #endif
-  release(h);
+  release(h, 1);
 }
 
 void *calloc(size_t n, size_t size) {
@@ -250,7 +276,7 @@ void *realloc(void *p, size_t n) {
     return NULL;
   }
   if (need <= have) {
-    shrink(h, need);
+    shrink(h, need, 1);
     return p;
   }
 
@@ -258,7 +284,10 @@ void *realloc(void *p, size_t n) {
   if (nx && is_free(nx) && have + block_size(nx) >= need) {
     list_remove((FreeBlock *)nx);
     set_block(h, have + block_size(nx), 0);
-    shrink(h, need);
+#ifdef KS_MALLOC_DEBUG
+    memset(nx, DEAD_BYTE, MIN_BLOCK);  // o resto de nx já é 0xDD
+#endif
+    shrink(h, need, 0);
     return p;
   }
 

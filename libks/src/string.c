@@ -3,7 +3,10 @@
 // O codegen do kscc copia structs inline; estas funções só são chamadas
 // pelo usuário e pelo resto da libks. memcpy/memset trabalham com palavras
 // de 4 bytes quando os endereços permitem: a VM executa uma instrução por
-// vez, então 4 bytes por iteração dão ~4x menos instruções.
+// vez, então 4 bytes por iteração dão ~4x menos instruções. Os laços
+// andam com um ponteiro até um ponteiro final (`*w++ = x`): com o codegen
+// sem otimização da v1 isso custa um terço das instruções de manter um
+// contador e dois ponteiros.
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,10 +20,16 @@ void *memcpy(void *restrict dst, const void *restrict src, size_t n) {
   const unsigned char *s = src;
 
   if (aligned4(d, s)) {
-    for (; n >= 4; n -= 4, d += 4, s += 4)
-      *(unsigned *)d = *(const unsigned *)s;
+    unsigned *w = (unsigned *)d;
+    const unsigned *r = (const unsigned *)s;
+    unsigned *wend = w + n / 4;
+    while (w < wend)
+      *w++ = *r++;
+    d = (unsigned char *)w;
+    s = (const unsigned char *)r;
+    n &= 3;
   }
-  while (n--)
+  for (unsigned char *end = d + n; d < end;)
     *d++ = *s++;
   return dst;
 }
@@ -47,10 +56,14 @@ void *memset(void *p, int c, size_t n) {
 
   if (aligned4(d, d)) {
     unsigned word = b * 0x01010101u;
-    for (; n >= 4; n -= 4, d += 4)
-      *(unsigned *)d = word;
+    unsigned *w = (unsigned *)d;
+    unsigned *wend = w + n / 4;
+    while (w < wend)
+      *w++ = word;
+    d = (unsigned char *)w;
+    n &= 3;
   }
-  while (n--)
+  for (unsigned char *end = d + n; d < end;)
     *d++ = b;
   return p;
 }

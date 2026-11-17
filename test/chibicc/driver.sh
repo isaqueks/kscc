@@ -492,4 +492,21 @@ check '#include_next'
 ! $kscc -static -o $tmp/foo $tmp/foo.c 2> /dev/null
 check '-static rejeitado'
 
+# kscc: saída igual a uma entrada é recusada e o fonte fica intacto
+# (`-S -o x.c x.c` sobrescrevia o fonte).
+echo 'int main() { return 0; }' > $tmp/same.c
+cp $tmp/same.c $tmp/same.orig
+! $kscc -S -o $tmp/same.c $tmp/same.c 2> $tmp/same.err &&
+  cmp -s $tmp/same.c $tmp/same.orig && grep -q 'mesmo que o de saida' $tmp/same.err
+check '-o igual a entrada'
+
+# kscc: subprocesso morto por sinal é relatado (antes: saída 1 muda).
+printf '#!/bin/sh
+kill -SEGV $$
+' > $tmp/ksas-sig
+chmod +x $tmp/ksas-sig
+! $kscc --ksas $tmp/ksas-sig -o $tmp/sig.ksx $tmp/empty.c 2> $tmp/sig.err &&
+  grep -q 'terminou pelo sinal' $tmp/sig.err
+check 'subprocesso morto por sinal'
+
 echo OK

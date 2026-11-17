@@ -259,6 +259,9 @@ struct Node {
 
   // Block or statement expression
   Node *body;
+  // kscc: ND_BLOCK que declara VLA: slot que guarda o alloca_bottom da
+  // entrada, restaurado na saída do bloco (ver gen_stmt em codegen.c).
+  Obj *vla_save;
 
   // Struct member access
   Member *member;

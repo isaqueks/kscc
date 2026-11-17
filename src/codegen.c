@@ -33,6 +33,26 @@ static char *L;
 static void gen_expr(Node *node);
 static void gen_stmt(Node *node);
 
+// kscc: escopos de labels para saltos para fora de `({ ... })` (ver
+// unwind_to_label).
+static HashMap label_scope;
+static Node top_scope;
+
+typedef struct {
+  Node *scope;
+  int depth;
+} ScopeDepth;
+
+static ScopeDepth *scope_depth;
+static int scope_len, scope_cap;
+
+// kscc: blocos com VLA (Node::vla_save): label_vla liga cada label ao
+// bloco com VLA mais interno que o contém (top_scope se nenhum), e
+// vla_blocks é a pilha dos que estão sendo gerados.
+static HashMap label_vla;
+static Node **vla_blocks;
+static int vla_len, vla_cap;
+
 __attribute__((format(printf, 1, 2)))
 static void println(char *fmt, ...) {
   va_list ap;
@@ -672,8 +692,14 @@ static void gen_expr(Node *node) {
     store(node->ty);
     return;
   case ND_STMT_EXPR:
+    if (scope_len == scope_cap) {
+      scope_cap = scope_cap ? scope_cap * 2 : 8;
+      scope_depth = realloc(scope_depth, sizeof(ScopeDepth) * scope_cap);
+    }
+    scope_depth[scope_len++] = (ScopeDepth){node, depth};
     for (Node *n = node->body; n; n = n->next)
       gen_stmt(n);
+    scope_len--;
     return;
   case ND_COMMA:
     gen_expr(node->lhs);
@@ -896,6 +922,137 @@ static void gen_expr(Node *node) {
   error_tok(node->tok, "invalid expression");
 }
 
+// kscc: um salto (goto, break, continue) para fora de uma expressão-
+// comando `({ ... })` pode partir com temporários na pilha: `x + ({ if (c)
+// continue; 1; })` já empilhou x. O GCC permite sair assim (só é proibido
+// entrar), e sem ajuste cada salto deixava 4 bytes por temporário na
+// pilha (um laço estourava). Antes de gerar a função, label_scope liga
+// cada label ao ND_STMT_EXPR mais interno que o contém (top_scope se
+// nenhum); durante a geração, scope_depth guarda o `depth` em que cada
+// ND_STMT_EXPR ativo começou, que é o `depth` dos seus labels. O salto
+// desempilha a diferença. Fora de expressões-comando depth é 0 nos
+// comandos, e nada muda.
+//
+// O mesmo percurso preenche label_vla, que diz de quais blocos com VLA um
+// salto sai: os VLAs deles são liberados antes do salto
+// (release_vla_to_label).
+static void find_label_scopes(Node *node, Node *scope, Node *vla);
+
+static void find_label_scopes_list(Node *node, Node *scope, Node *vla) {
+  for (; node; node = node->next)
+    find_label_scopes(node, scope, vla);
+}
+
+static void put_label_scope(char *label, Node *scope, Node *vla) {
+  if (!label)
+    return;
+  hashmap_put(&label_scope, label, scope);
+  hashmap_put(&label_vla, label, vla);
+}
+
+static void find_label_scopes(Node *node, Node *scope, Node *vla) {
+  if (!node)
+    return;
+
+  switch (node->kind) {
+  case ND_LABEL:
+    put_label_scope(node->unique_label, scope, vla);
+    break;
+  case ND_FOR:
+  case ND_DO:
+  case ND_SWITCH:
+    put_label_scope(node->brk_label, scope, vla);
+    put_label_scope(node->cont_label, scope, vla);
+    break;
+  case ND_STMT_EXPR:
+    find_label_scopes_list(node->body, node, vla);
+    return;
+  case ND_BLOCK:
+    if (node->vla_save) {
+      find_label_scopes_list(node->body, scope, node);
+      return;
+    }
+    break;
+  }
+
+  find_label_scopes(node->lhs, scope, vla);
+  find_label_scopes(node->rhs, scope, vla);
+  find_label_scopes(node->cond, scope, vla);
+  find_label_scopes(node->then, scope, vla);
+  find_label_scopes(node->els, scope, vla);
+  find_label_scopes(node->init, scope, vla);
+  find_label_scopes(node->inc, scope, vla);
+  find_label_scopes_list(node->body, scope, vla);
+  find_label_scopes_list(node->args, scope, vla);
+}
+
+// Desempilha os temporários acima do nível do label antes de saltar.
+// Devolve o `depth` com que se chega ao label.
+static int unwind_to_label(char *label) {
+  if (depth == 0)
+    return 0;
+
+  Node *scope = hashmap_get(&label_scope, label);
+  if (!scope)
+    return depth;
+
+  int target = -1;
+  if (scope == &top_scope)
+    target = 0;
+  for (int i = scope_len - 1; i >= 0 && target < 0; i--)
+    if (scope_depth[i].scope == scope)
+      target = scope_depth[i].depth;
+
+  // Alvo dentro de uma expressão-comando que não está ativa: salto para
+  // dentro dela, que o C não permite. Nada a ajustar.
+  if (target < 0 || target >= depth)
+    return depth;
+  add_imm("sp", "sp", (depth - target) * 4);
+  return target;
+}
+
+// kscc: libera os VLAs de um bloco: alloca_bottom e sp voltam ao valor
+// guardado na entrada (Node::vla_save). Os `ntemps` temporários que
+// continuam vivos (os do nível do comando) ficam entre sp e alloca_bottom
+// e sobem junto; o destino está acima da origem, então a cópia vai de
+// cima para baixo. Destrói r3 e r4.
+static void vla_restore(Obj *save, int ntemps) {
+  load_fp_slot("r3", save->offset);
+  store_fp_slot("r3", current_fn->alloca_bottom->offset, "r4");
+  if (ntemps > 0) {
+    add_imm("r3", "r3", -ntemps * 4);
+    for (int i = ntemps - 1; i >= 0; i--) {
+      println("  ldw r4, [sp + %d]", i * 4);
+      println("  stw [r3 + %d], r4", i * 4);
+    }
+  }
+  println("  mov sp, r3");
+}
+
+// kscc: antes de um salto, libera os VLAs dos blocos de que ele sai: basta
+// restaurar o mais externo deles. `ntemps` é o depth no label.
+static void release_vla_to_label(char *label, int ntemps) {
+  if (vla_len == 0)
+    return;
+
+  Node *target = hashmap_get(&label_vla, label);
+  if (!target)
+    return;
+
+  int i = 0;
+  if (target != &top_scope) {
+    for (i = vla_len - 1; i >= 0 && vla_blocks[i] != target; i--)
+      ;
+    // Alvo num bloco com VLA que não está ativo: salto para dentro do
+    // escopo de um VLA, que o C não permite.
+    if (i < 0)
+      return;
+    i++;
+  }
+  if (i < vla_len)
+    vla_restore(vla_blocks[i]->vla_save, ntemps);
+}
+
 static void gen_stmt(Node *node) {
   emit_loc(node->tok);
 
@@ -975,12 +1132,31 @@ static void gen_stmt(Node *node) {
     gen_stmt(node->lhs);
     return;
   case ND_BLOCK:
+    // kscc: bloco que declara VLA: guarda alloca_bottom na entrada e o
+    // restaura na saída (e nos saltos para fora, release_vla_to_label),
+    // liberando o VLA no fim do seu escopo (C11 6.2.4p7).
+    if (node->vla_save) {
+      load_fp_slot("r1", current_fn->alloca_bottom->offset);
+      store_fp_slot("r1", node->vla_save->offset, "r2");
+      if (vla_len == vla_cap) {
+        vla_cap = vla_cap ? vla_cap * 2 : 8;
+        vla_blocks = realloc(vla_blocks, sizeof(Node *) * vla_cap);
+      }
+      vla_blocks[vla_len++] = node;
+    }
     for (Node *n = node->body; n; n = n->next)
       gen_stmt(n);
+    if (node->vla_save) {
+      vla_len--;
+      vla_restore(node->vla_save, depth);
+    }
     return;
-  case ND_GOTO:
+  case ND_GOTO: {
+    int ntemps = unwind_to_label(node->unique_label);
+    release_vla_to_label(node->unique_label, ntemps);
     println("  jmp %s", node->unique_label);
     return;
+  }
   case ND_GOTO_EXPR:
     gen_expr(node->lhs);
     println("  jmpr r1");
@@ -1101,9 +1277,10 @@ static void assign_lvar_offsets(Obj *prog) {
 // kscc: valor de 32 bits de uma relocação (`.word sym + addend`).
 static void emit_reloc(Relocation *rel) {
   int32_t addend = (int32_t)(uint32_t)rel->addend;
+  // A magnitude é calculada sem sinal: -INT32_MIN não cabe em int.
+  uint32_t mag = addend < 0 ? 0u - (uint32_t)addend : (uint32_t)addend;
   if (addend)
-    println("  .word %s %c %d", *rel->label, addend < 0 ? '-' : '+',
-            addend < 0 ? -addend : addend);
+    println("  .word %s %c %u", *rel->label, addend < 0 ? '-' : '+', mag);
   else
     println("  .word %s", *rel->label);
 }
@@ -1266,6 +1443,9 @@ static void emit_text(Obj *prog) {
     }
 
     // Emit code
+    label_scope = (HashMap){0};
+    label_vla = (HashMap){0};
+    find_label_scopes(fn->body, &top_scope, &top_scope);
     gen_stmt(fn->body);
     assert(depth == 0);
 
@@ -1315,11 +1495,47 @@ static bool is_asm_ident_byte(unsigned char c) {
   return isalnum(c) || c == '_';
 }
 
+// kscc: o ksas lê como registrador, sem diferenciar maiúsculas, zr, fp,
+// sp, r0-r31 e os apelidos a0-a3, t0-t10, s0-s13 (ksas_reg_parse); um
+// global C com esse nome (`int fp;`, `int s1;`) não pode virar label.
+// Esses nomes ganham um '.' no fim (`fp` -> `fp.`), que o escape em
+// hexadecimal nunca produz (ele sempre põe dois dígitos depois do '.').
+static bool is_ksas_register(char *name) {
+  char lc[4];
+  int n = strlen(name);
+  if (n < 2 || n > 3)
+    return false;
+  for (int i = 0; i <= n; i++)
+    lc[i] = tolower((unsigned char)name[i]);
+
+  if (!strcmp(lc, "zr") || !strcmp(lc, "fp") || !strcmp(lc, "sp"))
+    return true;
+
+  // Uma ou duas casas decimais, sem zero à esquerda ("r01" não é).
+  if (!isdigit((unsigned char)lc[1]) ||
+      (n == 3 && (!isdigit((unsigned char)lc[2]) || lc[1] == '0')))
+    return false;
+
+  int v = atoi(lc + 1);
+  switch (lc[0]) {
+  case 'r': return v < 32;
+  case 'a': return v < 4;
+  case 't': return v < 11;
+  case 's': return v < 14;
+  }
+  return false;
+}
+
 static void escape_symbol_names(Obj *prog) {
   for (Obj *var = prog; var; var = var->next) {
     char *name = var->name;
     if (strchr(name, '.'))
       continue; // anônimo (L<id>..N), já válido
+
+    if (is_ksas_register(name)) {
+      var->name = format("%s.", name);
+      continue;
+    }
 
     bool ok = true;
     for (char *p = name; *p; p++)

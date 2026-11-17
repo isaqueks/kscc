@@ -24,7 +24,8 @@ typedef struct {
   Obj *var;
   Type *type_def;
   Type *enum_ty;
-  int enum_val;
+  int64_t enum_val; // kscc: int64_t para guardar valores de unsigned int
+  bool enum_uint;   // kscc: constante de tipo unsigned int (ver enum_specifier)
 } VarScope;
 
 // Represents a block scope.
@@ -109,6 +110,9 @@ static Obj *builtin_alloca2; // kscc: __builtin_alloca, sinônimo de alloca
 
 // kscc: true enquanto o preprocessador avalia um #if (ver pp_const_expr).
 static bool pp_mode;
+
+// kscc: o bloco sendo lido declara um VLA (ver Node::vla_save).
+static bool block_has_vla;
 
 static bool is_typename(Token *tok);
 static Type *declspec(Token **rest, Token *tok, VarAttr *attr);
@@ -686,7 +690,15 @@ static Type *array_dimensions(Token **rest, Token *tok, Type *ty) {
 
   if (ty->kind == TY_VLA || !is_const_expr(expr))
     return vla_of(ty, expr);
-  return array_of(ty, eval(expr));
+
+  // kscc: tamanho negativo era aceito em silêncio, e um array de mais de
+  // INT_MAX bytes estourava o int de Type::size (UB no compilador).
+  int64_t len = eval(expr);
+  if (len < 0)
+    error_tok(expr->tok, "size of array is negative");
+  if (ty->size > 0 && len > INT32_MAX / ty->size)
+    error_tok(expr->tok, "array grande demais");
+  return array_of(ty, len);
 }
 
 // type-suffix = "(" func-params
@@ -813,24 +825,51 @@ static Type *enum_specifier(Token **rest, Token *tok) {
   tok = skip(tok, "{");
 
   // Read an enum-list.
+  //
+  // kscc: o C11 6.7.2.2p2 exige valores que caibam em int. Como o gcc
+  // (extensão aceita sem aviso em -Wall), um valor entre INT_MAX + 1 e
+  // UINT_MAX (`F = 1u << 31`) faz de todas as constantes do enum unsigned
+  // int; antes o valor virava um int negativo em silêncio e `F > 0` era
+  // falso. Valores negativos junto com esses não cabem em 32 bits: erro.
+  //
+  // O tipo enumerado em si é unsigned int quando não há valor negativo,
+  // como no gcc e no clang (a escolha é da implementação, C11 6.7.2.2p4):
+  // com ele signed, `enum Cor c : 2` guardando 3 era lido como -1, e
+  // `x.c == 3` dava falso.
   int i = 0;
-  int val = 0;
+  int64_t val = 0;
+  bool has_neg = false, has_big = false;
+  VarScope **consts = NULL;
   while (!consume_end(rest, tok)) {
     if (i++ > 0)
       tok = skip(tok, ",");
 
     char *name = get_ident(tok);
+    Token *start = tok;
     tok = tok->next;
 
     if (equal(tok, "="))
       val = const_expr(&tok, tok->next);
 
+    if (val > UINT32_MAX)
+      error_tok(start, "valor do enumerador nao cabe em 32 bits");
+    has_neg |= val < 0;
+    has_big |= val > INT32_MAX;
+    if (has_neg && has_big)
+      error_tok(start, "valores do enum nao cabem em int nem em unsigned int");
+
     VarScope *sc = push_scope(name);
     sc->enum_ty = ty;
     sc->enum_val = val;
-    // kscc: sem overflow com sinal no host depois de INT_MAX (UBSan).
-    val = (int)((unsigned)val + 1);
+    val++;
+    consts = realloc(consts, sizeof(VarScope *) * i);
+    consts[i - 1] = sc;
   }
+
+  ty->is_unsigned = !has_neg;
+  for (int j = 0; j < i; j++)
+    consts[j]->enum_uint = has_big;
+  free(consts);
 
   if (tag)
     push_tag_scope(tag, ty);
@@ -931,6 +970,7 @@ static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr) 
       // Variable length arrays (VLAs) are translated to alloca() calls.
       // For example, `int x[n+2]` is translated to `tmp = n + 2,
       // x = alloca(tmp)`.
+      block_has_vla = true;
       Obj *var = new_lvar(get_ident(ty->name), ty);
       Token *tok = ty->name;
       Node *expr = new_binary(ND_ASSIGN, new_vla_ptr(var, tok),
@@ -1490,6 +1530,18 @@ static void write_buf(char *buf, uint64_t val, int sz) {
     unreachable();
 }
 
+// kscc: grava o valor de `expr` no bitfield `mem` da struct em `base`.
+static void write_bitfield(char *base, Member *mem, Node *expr) {
+  char *loc = base + mem->offset;
+  uint64_t oldval = read_buf(loc, mem->ty->size);
+  uint64_t newval = eval(expr);
+  if (mem->ty->kind == TY_BOOL)
+    newval = newval != 0;
+  uint64_t mask = ((uint64_t)1 << mem->bit_width) - 1;
+  uint64_t combined = oldval | ((newval & mask) << mem->bit_offset);
+  write_buf(loc, combined, mem->ty->size);
+}
+
 static Relocation *
 write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int offset) {
   // kscc: `struct T g = outra;` em escopo de arquivo não é constante; o
@@ -1507,18 +1559,12 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
   if (ty->kind == TY_STRUCT) {
     for (Member *mem = ty->members; mem; mem = mem->next) {
       if (mem->is_bitfield) {
-        if (!mem->name) // kscc: bitfield sem nome não é inicializado
-          continue;
-        Node *expr = init->children[mem->idx]->expr;
-        if (!expr)
-          break;
-
-        char *loc = buf + offset + mem->offset;
-        uint64_t oldval = read_buf(loc, mem->ty->size);
-        uint64_t newval = eval(expr);
-        uint64_t mask = (1L << mem->bit_width) - 1;
-        uint64_t combined = oldval | ((newval & mask) << mem->bit_offset);
-        write_buf(loc, combined, mem->ty->size);
+        // kscc: um campo sem inicializador (ou sem nome) não encerra a
+        // struct: o chibicc fazia `break` e, em `{ .c = 1, .a = 2 }`, os
+        // campos depois do primeiro não inicializado ficavam zerados.
+        Node *expr = mem->name ? init->children[mem->idx]->expr : NULL;
+        if (expr)
+          write_bitfield(buf + offset, mem, expr);
       } else {
         cur = write_gvar_data(cur, init->children[mem->idx], mem->ty, buf,
                               offset + mem->offset);
@@ -1530,6 +1576,13 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
   if (ty->kind == TY_UNION) {
     if (!init->mem)
       return cur;
+    // kscc: membro bitfield de union também é mascarado.
+    if (init->mem->is_bitfield) {
+      Node *expr = init->children[init->mem->idx]->expr;
+      if (expr)
+        write_bitfield(buf + offset, init->mem, expr);
+      return cur;
+    }
     return write_gvar_data(cur, init->children[init->mem->idx],
                            init->mem->ty, buf, offset);
   }
@@ -1550,10 +1603,22 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
   char **label = NULL;
   uint64_t val = eval2(init->expr, &label);
 
+  // kscc: a conversão implícita para o tipo do objeto (C11 6.7.9p11) não
+  // aparece na árvore: para _Bool é != 0 (`_Bool b = 5;` gravava 5), e
+  // um endereço só cabe num objeto do tamanho de um ponteiro (o .word de
+  // 4 bytes sobrescrevia os vizinhos de um char ou short).
+  if (ty->kind == TY_BOOL) {
+    write_buf(buf + offset, label || val != 0, 1);
+    return cur;
+  }
+
   if (!label) {
     write_buf(buf + offset, val, ty->size);
     return cur;
   }
+
+  if (ty->size != 4)
+    error_tok(init->expr->tok, "initializer element is not constant");
 
   Relocation *rel = calloc(1, sizeof(Relocation));
   rel->offset = offset;
@@ -1851,6 +1916,8 @@ static Node *compound_stmt(Token **rest, Token *tok) {
   Node *node = new_node(ND_BLOCK, tok);
   Node head = {};
   Node *cur = &head;
+  bool outer_has_vla = block_has_vla;
+  block_has_vla = false;
 
   enter_scope();
 
@@ -1882,6 +1949,12 @@ static Node *compound_stmt(Token **rest, Token *tok) {
   }
 
   leave_scope();
+
+  // kscc: o VLA vive até o fim do bloco (C11 6.2.4p7). Sem liberar, um
+  // VLA num laço consumia pilha a cada iteração até FAULT_STACK.
+  if (block_has_vla)
+    node->vla_save = new_lvar("", pointer_to(ty_char));
+  block_has_vla = outer_has_vla;
 
   node->body = head.next;
   *rest = tok->next;
@@ -1971,7 +2044,21 @@ static int64_t eval_div(Node *node, bool is_mod) {
 // expression for a global variable.
 static int64_t eval2(Node *node, char ***label) {
   add_type(node);
-  return wrap_to_type(node->ty, eval2_raw(node, label));
+  int64_t val = eval2_raw(node, label);
+
+  // kscc: um endereço (label + deslocamento) convertido para _Bool vale 1
+  // (endereço de objeto nunca é nulo); para um inteiro menor que um
+  // ponteiro não é constante: o .word do link não cabe nele. Antes,
+  // (_Bool)&x e (char)&x ficavam com o label e viravam `.word x`.
+  if (node->kind == ND_CAST && label && *label) {
+    if (node->ty->kind == TY_BOOL) {
+      *label = NULL;
+      return 1;
+    }
+    if (node->ty->size != 4)
+      error_tok(node->tok, "initializer element is not constant");
+  }
+  return wrap_to_type(node->ty, val);
 }
 
 // kscc: soma, subtração, multiplicação e negação em uint64_t para que o
@@ -2714,9 +2801,11 @@ static void struct_members(Token **rest, Token *tok, Type *ty) {
     bool first = true;
 
     // Anonymous struct member
+    Token *start = tok;
     if ((basety->kind == TY_STRUCT || basety->kind == TY_UNION) &&
         consume(&tok, tok, ";")) {
       Member *mem = calloc(1, sizeof(Member));
+      mem->tok = start; // kscc: Member::tok não era preenchido
       mem->ty = basety;
       mem->idx = idx++;
       mem->align = attr.align ? attr.align : mem->ty->align;
@@ -2731,14 +2820,26 @@ static void struct_members(Token **rest, Token *tok, Type *ty) {
       first = false;
 
       Member *mem = calloc(1, sizeof(Member));
+      mem->tok = tok; // kscc: Member::tok não era preenchido
       mem->ty = declarator(&tok, tok, basety);
       mem->name = mem->ty->name;
       mem->idx = idx++;
       mem->align = attr.align ? attr.align : mem->ty->align;
 
       if (consume(&tok, tok, ":")) {
+        // kscc: largura fora de 0..bits do tipo (`int x : 33`) era aceita
+        // e gerava deslocamentos negativos; o C11 6.7.2.1p4 exige erro.
+        Token *wtok = tok;
+        int64_t w = const_expr(&tok, tok);
+        int max = (mem->ty->kind == TY_BOOL) ? 1 : mem->ty->size * 8;
+        if (!is_integer(mem->ty))
+          error_tok(wtok, "bit-field com tipo nao inteiro");
+        if (w < 0 || w > max)
+          error_tok(wtok, "largura de bit-field invalida");
+        if (w == 0 && mem->name)
+          error_tok(wtok, "bit-field com nome nao pode ter largura zero");
         mem->is_bitfield = true;
-        mem->bit_width = const_expr(&tok, tok);
+        mem->bit_width = w;
       }
 
       cur = cur->next = mem;
@@ -2848,6 +2949,11 @@ static Type *struct_decl(Token **rest, Token *tok) {
   int bits = 0;
 
   for (Member *mem = ty->members; mem; mem = mem->next) {
+    // kscc: `bits` conta bits num int: membros somando mais de 128 MiB
+    // estourariam (UB no compilador).
+    if ((int64_t)bits + (int64_t)mem->ty->size * 8 > INT32_MAX / 2)
+      error_tok(mem->tok, "struct grande demais");
+
     if (mem->is_bitfield && mem->bit_width == 0) {
       // Zero-width anonymous bitfield has a special meaning.
       // It affects only alignment.
@@ -2861,8 +2967,14 @@ static Type *struct_decl(Token **rest, Token *tok) {
       mem->bit_offset = bits % (sz * 8);
       bits += mem->bit_width;
     } else {
+      // kscc: numa struct packed, depois de um bitfield `bits` pode não
+      // estar num limite de byte; bits / 8 arredondava para baixo e o
+      // membro se sobrepunha aos bits altos do campo (escrever um
+      // corrompia o outro).
       if (!ty->is_packed)
         bits = align_to(bits, mem->align * 8);
+      else
+        bits = align_to(bits, 8);
       mem->offset = bits / 8;
       bits += mem->ty->size * 8;
     }
@@ -2952,9 +3064,47 @@ static Node *struct_ref(Node *node, Token *tok) {
   return node;
 }
 
+// kscc: A++ / A-- com A _Bool (variável ou campo). O valor novo é
+// saturado em 0/1, então (A += 1) - 1 não devolve o antigo: com A == 1,
+// A++ dava 0. Gera `p = &A, old = *p, *p = old + addend, old`, avaliando
+// o lvalue uma vez só (para um membro, p aponta para a struct, como em
+// to_assign, porque um bitfield não tem endereço).
+static Node *new_bool_inc_dec(Node *node, Token *tok, int addend) {
+  bool member = node->kind == ND_MEMBER;
+  Node *target = member ? node->lhs : node;
+  Obj *ptr = new_lvar("", pointer_to(target->ty));
+  Obj *old = new_lvar("", ty_bool);
+
+  Node *ref[2];
+  for (int i = 0; i < 2; i++) {
+    ref[i] = new_unary(ND_DEREF, new_var_node(ptr, tok), tok);
+    if (member) {
+      ref[i] = new_unary(ND_MEMBER, ref[i], tok);
+      ref[i]->member = node->member;
+    }
+  }
+
+  Node *expr = new_binary(ND_ASSIGN, new_var_node(ptr, tok),
+                          new_unary(ND_ADDR, target, tok), tok);
+  expr = new_binary(ND_COMMA, expr,
+                    new_binary(ND_ASSIGN, new_var_node(old, tok), ref[0], tok), tok);
+  expr = new_binary(ND_COMMA, expr,
+                    new_binary(ND_ASSIGN, ref[1],
+                               new_add(new_var_node(old, tok), new_num(addend, tok), tok),
+                               tok),
+                    tok);
+  expr = new_binary(ND_COMMA, expr, new_var_node(old, tok), tok);
+
+  // Bitfield promove a int (ver promote_bitfield em type.c).
+  return new_cast(expr, (member && node->member->is_bitfield) ? ty_int : ty_bool);
+}
+
 // Convert A++ to `(typeof A)((A += 1) - 1)`
 static Node *new_inc_dec(Node *node, Token *tok, int addend) {
   add_type(node);
+  if (node->ty->kind == TY_BOOL)
+    return new_bool_inc_dec(node, tok, addend);
+
   Node *old = new_add(to_assign(new_add(node, new_num(addend, tok), tok)),
                       new_num(-addend, tok), tok);
 
@@ -3080,6 +3230,14 @@ static Node *funcall(Token **rest, Token *tok, Node *fn) {
       error_tok(tok, "too many arguments");
 
     if (param_ty) {
+      // kscc: struct/union passada a parâmetro escalar (ou o contrário, ou
+      // outra struct) era aceita: o escalar ia em registrador e o chamado
+      // lia a struct da pilha, ou a struct virava o seu endereço.
+      bool p_agg = param_ty->kind == TY_STRUCT || param_ty->kind == TY_UNION;
+      bool a_agg = arg->ty->kind == TY_STRUCT || arg->ty->kind == TY_UNION;
+      if (p_agg != a_agg || (p_agg && !is_compatible(param_ty, arg->ty)))
+        error_tok(arg->tok, "incompatible type for argument");
+
       if (param_ty->kind != TY_STRUCT && param_ty->kind != TY_UNION)
         arg = new_cast(arg, param_ty);
       param_ty = param_ty->next;
@@ -3301,8 +3459,12 @@ static Node *primary(Token **rest, Token *tok) {
     if (sc) {
       if (sc->var)
         return new_var_node(sc->var, tok);
-      if (sc->enum_ty)
-        return new_num(sc->enum_val, tok);
+      if (sc->enum_ty) {
+        Node *node = new_num(sc->enum_val, tok);
+        if (sc->enum_uint)
+          node->ty = ty_uint; // kscc: ver enum_specifier
+        return node;
+      }
     }
 
     if (equal(tok->next, "("))
@@ -3522,6 +3684,24 @@ static bool is_function(Token *tok) {
 }
 
 // Remove redundant tentative definitions.
+// kscc: definição provisória de array sem tamanho (`int a[];`) que fica
+// sem definição na unidade: o C11 6.9.2p2 a trata como `int a[1]` (ou com
+// o tamanho de outra declaração do mesmo nome, `extern int a[5];`). O
+// chibicc a emitia com tamanho negativo, e o kscc com 0 bytes: escrever
+// a[0] sobrescrevia o objeto seguinte em silêncio.
+static void complete_tentative_array(Obj *var) {
+  if (var->ty->kind != TY_ARRAY || var->ty->array_len >= 0)
+    return;
+
+  for (Obj *v = globals; v; v = v->next)
+    if (v != var && v->ty->kind == TY_ARRAY && v->ty->array_len >= 0 &&
+        !strcmp(v->name, var->name)) {
+      var->ty = v->ty;
+      return;
+    }
+  var->ty = array_of(var->ty->base, 1);
+}
+
 static void scan_globals(void) {
   Obj head;
   Obj *cur = &head;
@@ -3552,8 +3732,10 @@ static void scan_globals(void) {
 
     // If there's another definition, the tentative definition
     // is redundant
-    if (!var2)
+    if (!var2) {
+      complete_tentative_array(var);
       cur = cur->next = var;
+    }
   }
 
   cur->next = NULL;

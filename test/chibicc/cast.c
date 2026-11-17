@@ -1,9 +1,13 @@
 #include "test.h"
 
 int main() {
+#ifdef KSCC_HAS_LL // kscc: 8590066177 só cabe em long long (fase 5)
   ASSERT(131585, (int)8590066177);
   ASSERT(513, (short)8590066177);
   ASSERT(1, (char)8590066177);
+#endif
+  ASSERT(513, (short)131585); // kscc: versão de 32 bits dos casos acima
+  ASSERT(1, (char)131585);
   ASSERT(1, (long)1);
   ASSERT(0, (long)&*(int *)0);
   ASSERT(513, ({ int x=512; *(char *)&x=1; x; }));
@@ -28,11 +32,11 @@ int main() {
   ASSERT(2147483647, ((unsigned)-1)>>1);
   ASSERT(-50, (-100)/2);
   ASSERT(2147483598, ((unsigned)-100)/2);
-  ASSERT(9223372036854775758, ((unsigned long)-100)/2);
-  ASSERT(0, ((long)-1)/(unsigned)100);
+  ASSERT(2147483598, ((unsigned long)-100)/2); // kscc: unsigned long tem 32 bits
+  ASSERT(42949672, ((long)-1)/(unsigned)100); // kscc: ILP32: long + unsigned = unsigned long
   ASSERT(-2, (-100)%7);
   ASSERT(2, ((unsigned)-100)%7);
-  ASSERT(6, ((unsigned long)-100)%9);
+  ASSERT(3, ((unsigned long)-100)%9); // kscc: 4294967196 % 9
 
   ASSERT(65535, (int)(unsigned short)65535);
   ASSERT(65535, ({ unsigned short x = 65535; x; }));
@@ -41,6 +45,7 @@ int main() {
   ASSERT(-1, ({ typedef short T; T x = 65535; (int)x; }));
   ASSERT(65535, ({ typedef unsigned short T; T x = 65535; (int)x; }));
 
+#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
   ASSERT(0, (_Bool)0.0);
   ASSERT(1, (_Bool)0.1);
   ASSERT(3, (char)3.0);
@@ -53,7 +58,8 @@ int main() {
   ASSERT(3, (double)3);
   ASSERT(3, (float)3L);
   ASSERT(3, (double)3L);
+#endif
 
-  printf("OK\n");
+  kscc_ok(); // kscc: printf só na fase 4 (libks)
   return 0;
 }

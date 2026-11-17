@@ -16,6 +16,6 @@ int main() {
   ASSERT(201, __LINE__);
   ASSERT(0, strcmp(__FILE__, "xyz"));
 
-  printf("OK\n");
+  kscc_ok(); // kscc: printf só na fase 4 (libks)
   return 0;
 }

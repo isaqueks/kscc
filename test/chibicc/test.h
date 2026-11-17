@@ -12,3 +12,7 @@ int vsprintf();
 long strlen(char *s);
 void *memcpy(void *dest, void *src, long n);
 void *memset(void *s, int c, long n);
+
+// kscc: printf só existe com a libks (fase 4); os testes terminam com
+// kscc_ok(), que imprime "OK" (test/chibicc/common.c).
+void kscc_ok(void);

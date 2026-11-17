@@ -68,6 +68,7 @@ int main() {
   ASSERT(7, ({ int i=0; int j=0; do { j++; } while (i++ < 6); j; }));
   ASSERT(4, ({ int i=0; int j=0; int k=0; do { if (++j > 3) break; continue; k++; } while (1); j; }));
 
+#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
   ASSERT(0, 0.0 && 0.0);
   ASSERT(0, 0.0 && 0.1);
   ASSERT(0, 0.3 && 0.0);
@@ -82,6 +83,7 @@ int main() {
   ASSERT(3, ({ int x=5; if (0.1) x=3; x; }));
   ASSERT(10, ({ double i=10.0; int j=0; for (; i; i--, j++); j; }));
   ASSERT(10, ({ double i=10.0; int j=0; do j++; while(--i); j; }));
+#endif
 
   ASSERT(2, ({ int i=0; switch(7) { case 0 ... 5: i=1; break; case 6 ... 20: i=2; break; } i; }));
   ASSERT(1, ({ int i=0; switch(7) { case 0 ... 7: i=1; break; case 8 ... 10: i=2; break; } i; }));
@@ -95,6 +97,6 @@ int main() {
   ASSERT(2, ({ static void *p[]={&&v52,&&v52,&&v53}; int i=0; goto *p[1]; v51:i++; v52:i++; v53:i++; i; }));
   ASSERT(1, ({ static void *p[]={&&v62,&&v62,&&v63}; int i=0; goto *p[2]; v61:i++; v62:i++; v63:i++; i; }));
 
-  printf("OK\n");
+  kscc_ok(); // kscc: printf só na fase 4 (libks)
   return 0;
 }

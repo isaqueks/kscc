@@ -9,6 +9,6 @@ int main() {
   ASSERT(8, ({ const x = 8; int *const y=&x; *y; }));
   ASSERT(6, ({ const x = 6; *(const * const)&x; }));
 
-  printf("OK\n");
+  kscc_ok(); // kscc: printf só na fase 4 (libks)
   return 0;
 }

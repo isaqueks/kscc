@@ -2,9 +2,9 @@
 
 #pragma once
 
-#include "test/pragma-once.c"
+#include "test/chibicc/pragma-once.c" // kscc: caminho da suite no kscc
 
 int main() {
-  printf("OK\n");
+  kscc_ok(); // kscc: printf só na fase 4 (libks)
   return 0;
 }

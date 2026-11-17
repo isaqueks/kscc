@@ -113,7 +113,7 @@ int main() {
   ASSERT(-1, 0?-2:-1);
   ASSERT(-2, 1?-2:-1);
   ASSERT(4, sizeof(0?1:2));
-  ASSERT(8, sizeof(0?(long)1:(long)2));
+  ASSERT(4, sizeof(0?(long)1:(long)2)); // kscc: long tem 4 bytes (ILP32)
   ASSERT(-1, 0?(long)-2:-1);
   ASSERT(-1, 0?-2:(long)-1);
   ASSERT(-2, 1?(long)-2:-1);
@@ -126,19 +126,22 @@ int main() {
   ASSERT(-20, ({ int x; int *p=&x; p-20-p; }));
   ASSERT(1, ({ int x; int *p=&x; p-20-p<0; }));
 
-  ASSERT(15, (char *)0xffffffffffffffff - (char *)0xfffffffffffffff0);
-  ASSERT(-15, (char *)0xfffffffffffffff0 - (char *)0xffffffffffffffff);
-  ASSERT(1, (void *)0xffffffffffffffff > (void *)0);
+  // kscc: ponteiros de 32 bits (eram 0xffffffffffffffff etc.)
+  ASSERT(15, (char *)0xffffffff - (char *)0xfffffff0);
+  ASSERT(-15, (char *)0xfffffff0 - (char *)0xffffffff);
+  ASSERT(1, (void *)0xffffffff > (void *)0);
 
   ASSERT(3, 3?:5);
   ASSERT(5, 0?:5);
   ASSERT(4, ({ int i = 3; ++i?:10; }));
 
+#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
   ASSERT(3, (long double)3);
   ASSERT(5, (long double)3+2);
   ASSERT(6, (long double)3*2);
   ASSERT(5, (long double)3+2.0);
+#endif
 
-  printf("OK\n");
+  kscc_ok(); // kscc: printf só na fase 4 (libks)
   return 0;
 }

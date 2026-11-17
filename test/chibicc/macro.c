@@ -337,10 +337,10 @@ int main() {
 
   ASSERT(1, __STDC__);
 
-  ASSERT(0, strcmp(main_filename1, "test/macro.c"));
+  ASSERT(0, strcmp(main_filename1, "test/chibicc/macro.c")); // kscc: caminho da suite no kscc
   ASSERT(5, main_line1);
   ASSERT(7, main_line2);
-  ASSERT(0, strcmp(include1_filename, "test/include1.h"));
+  ASSERT(0, strcmp(include1_filename, "test/chibicc/include1.h")); // kscc: idem
   ASSERT(4, include1_line);
 
 #define M14(...) 3
@@ -383,7 +383,9 @@ int main() {
 
 #define CONCAT(x,y) x##y
   ASSERT(5, ({ int f0zz=5; CONCAT(f,0zz); }));
+#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
   ASSERT(5, ({ CONCAT(4,.57) + 0.5; }));
+#endif
 
   ASSERT(11, strlen(__DATE__));
   ASSERT(8, strlen(__TIME__));
@@ -394,21 +396,25 @@ int main() {
 
   ASSERT(24, strlen(__TIMESTAMP__));
 
-  ASSERT(0, strcmp(__BASE_FILE__, "test/macro.c"));
+  ASSERT(0, strcmp(__BASE_FILE__, "test/chibicc/macro.c")); // kscc: idem
 
 #define M30(buf, fmt, ...) sprintf(buf, fmt __VA_OPT__(,) __VA_ARGS__)
+#ifdef KSCC_PHASE4 // kscc: sprintf só com a libks (fase 4)
   ASSERT(0, ({ char buf[100]; M30(buf, "foo"); strcmp(buf, "foo"); }));
   ASSERT(0, ({ char buf[100]; M30(buf, "foo%d", 3); strcmp(buf, "foo3"); }));
   ASSERT(0, ({ char buf[100]; M30(buf, "foo%d%d", 3, 5); strcmp(buf, "foo35"); }));
+#endif
 
 #define M31(buf, fmt, ...) sprintf(buf, fmt, ## __VA_ARGS__)
+#ifdef KSCC_PHASE4 // kscc: sprintf só com a libks (fase 4)
   ASSERT(0, ({ char buf[100]; M31(buf, "foo"); strcmp(buf, "foo"); }));
   ASSERT(0, ({ char buf[100]; M31(buf, "foo%d", 3); strcmp(buf, "foo3"); }));
   ASSERT(0, ({ char buf[100]; M31(buf, "foo%d%d", 3, 5); strcmp(buf, "foo35"); }));
+#endif
 
 #define M31(x, y) (1, ##x y)
   ASSERT(3, M31(, 3));
 
-  printf("OK\n");
+  kscc_ok(); // kscc: printf só na fase 4 (libks)
   return 0;
 }

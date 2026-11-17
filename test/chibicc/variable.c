@@ -16,7 +16,7 @@ int main() {
 
   ASSERT(4, ({ int x; sizeof(x); }));
   ASSERT(4, ({ int x; sizeof x; }));
-  ASSERT(8, ({ int *x; sizeof(x); }));
+  ASSERT(4, ({ int *x; sizeof(x); })); // kscc: ponteiro de 4 bytes (ILP32)
   ASSERT(16, ({ int x[4]; sizeof(x); }));
   ASSERT(48, ({ int x[3][4]; sizeof(x); }));
   ASSERT(16, ({ int x[3][4]; sizeof(*x); }));
@@ -51,11 +51,11 @@ int main() {
   ASSERT(7, ({ int x; int y; char z; char *a=&y; char *b=&z; b-a; }));
   ASSERT(1, ({ int x; char y; int z; char *a=&y; char *b=&z; b-a; }));
 
-  ASSERT(8, ({ long x; sizeof(x); }));
+  ASSERT(4, ({ long x; sizeof(x); })); // kscc: long tem 4 bytes (ILP32)
   ASSERT(2, ({ short x; sizeof(x); }));
 
-  ASSERT(24, ({ char *x[3]; sizeof(x); }));
-  ASSERT(8, ({ char (*x)[3]; sizeof(x); }));
+  ASSERT(12, ({ char *x[3]; sizeof(x); })); // kscc: ponteiro de 4 bytes (ILP32)
+  ASSERT(4, ({ char (*x)[3]; sizeof(x); })); // kscc: ponteiro de 4 bytes (ILP32)
   ASSERT(1, ({ char (x); sizeof(x); }));
   ASSERT(3, ({ char (x)[3]; sizeof(x); }));
   ASSERT(12, ({ char (x[3])[4]; sizeof(x); }));
@@ -67,6 +67,6 @@ int main() {
 
   ASSERT(3, g3);
 
-  printf("OK\n");
+  kscc_ok(); // kscc: printf só na fase 4 (libks)
   return 0;
 }

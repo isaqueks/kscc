@@ -13,6 +13,6 @@ int main() {
   ASSERT(4, ({ enum { zero, one, two } x; sizeof(x); }));
   ASSERT(4, ({ enum t { zero, one, two }; enum t y; sizeof(y); }));
 
-  printf("OK\n");
+  kscc_ok(); // kscc: printf só na fase 4 (libks)
   return 0;
 }

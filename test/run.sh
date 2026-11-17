@@ -128,7 +128,9 @@ run_chibicc() {
     return
   fi
 
-  "$KSCC" -Iinclude -Itest/chibicc -o "$ksx" "$src" test/chibicc/common.c 2> "$base.cerr"
+  # kscc: os testes do chibicc alocam muitas locais em main (cada ({ ... })
+  # tem as suas); a pilha padrão de 4096 bytes não basta.
+  "$KSCC" -Iinclude -Itest/chibicc -Wl,--stack=131072 -o "$ksx" "$src" test/chibicc/common.c 2> "$base.cerr"
   if [ $? -ne 0 ]; then
     report_fail "$name" "falha de compilação:" "$(head -20 "$base.cerr")"
     return

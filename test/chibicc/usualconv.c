@@ -27,6 +27,6 @@ int main() {
 
   ASSERT(10, (1 ? ret10 : (void *)0)());
 
-  printf("OK\n");
+  kscc_ok(); // kscc: printf só na fase 4 (libks)
   return 0;
 }

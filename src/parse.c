@@ -1048,6 +1048,15 @@ static void array_designator(Token **rest, Token *tok, Type *ty, int *begin, int
   *rest = skip(tok, "]");
 }
 
+// kscc: bitfields sem nome (`int : 3;`, `int : 0;`) não participam da
+// inicialização (C11 6.7.9p9); o chibicc os contava como membros e um
+// inicializador posicional caía neles.
+static Member *skip_unnamed(Member *mem) {
+  while (mem && mem->is_bitfield && !mem->name)
+    mem = mem->next;
+  return mem;
+}
+
 // struct-designator = "." ident
 static Member *struct_designator(Token **rest, Token *tok, Type *ty) {
   Token *start = tok;
@@ -1065,8 +1074,9 @@ static Member *struct_designator(Token **rest, Token *tok, Type *ty) {
       continue;
     }
 
-    // Regular struct member
-    if (mem->name->len == tok->len && !strncmp(mem->name->loc, tok->loc, tok->len)) {
+    // Regular struct member (kscc: bitfield sem nome, `int : 0;`, tem
+    // name NULL; o chibicc derreferenciava NULL aqui e em get_struct_member)
+    if (mem->name && mem->name->len == tok->len && !strncmp(mem->name->loc, tok->loc, tok->len)) {
       *rest = tok->next;
       return mem;
     }
@@ -1213,7 +1223,7 @@ static void array_initializer2(Token **rest, Token *tok, Initializer *init, int 
 static void struct_initializer1(Token **rest, Token *tok, Initializer *init) {
   tok = skip(tok, "{");
 
-  Member *mem = init->ty->members;
+  Member *mem = skip_unnamed(init->ty->members);
   bool first = true;
 
   while (!consume_end(rest, tok)) {
@@ -1224,13 +1234,13 @@ static void struct_initializer1(Token **rest, Token *tok, Initializer *init) {
     if (equal(tok, ".")) {
       mem = struct_designator(&tok, tok, init->ty);
       designation(&tok, tok, init->children[mem->idx]);
-      mem = mem->next;
+      mem = skip_unnamed(mem->next);
       continue;
     }
 
     if (mem) {
       initializer2(&tok, tok, init->children[mem->idx]);
-      mem = mem->next;
+      mem = skip_unnamed(mem->next);
     } else {
       tok = skip_excess_element(tok);
     }
@@ -1240,7 +1250,7 @@ static void struct_initializer1(Token **rest, Token *tok, Initializer *init) {
 // struct-initializer2 = initializer ("," initializer)*
 static void struct_initializer2(Token **rest, Token *tok, Initializer *init, Member *mem, bool first) {
 
-  for (; mem && !is_end(tok); mem = mem->next) {
+  for (mem = skip_unnamed(mem); mem && !is_end(tok); mem = skip_unnamed(mem->next)) {
     Token *start = tok;
 
     if (!first)
@@ -1497,6 +1507,8 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
   if (ty->kind == TY_STRUCT) {
     for (Member *mem = ty->members; mem; mem = mem->next) {
       if (mem->is_bitfield) {
+        if (!mem->name) // kscc: bitfield sem nome não é inicializado
+          continue;
         Node *expr = init->children[mem->idx]->expr;
         if (!expr)
           break;
@@ -2846,7 +2858,11 @@ static Type *struct_decl(Token **rest, Token *tok) {
       bits += mem->ty->size * 8;
     }
 
-    if (!ty->is_packed && ty->align < mem->align)
+    // kscc: bitfield sem nome não influi no alinhamento da struct (SysV
+    // i386, como o gcc -m32): struct { char a; int : 0; char b; } tem 5
+    // bytes, não 8.
+    bool unnamed_bf = mem->is_bitfield && !mem->name;
+    if (!ty->is_packed && !unnamed_bf && ty->align < mem->align)
       ty->align = mem->align;
   }
 
@@ -2887,7 +2903,7 @@ static Member *get_struct_member(Type *ty, Token *tok) {
     }
 
     // Regular struct member
-    if (mem->name->len == tok->len &&
+    if (mem->name && mem->name->len == tok->len &&
         !strncmp(mem->name->loc, tok->loc, tok->len))
       return mem;
   }
@@ -2930,9 +2946,27 @@ static Node *struct_ref(Node *node, Token *tok) {
 // Convert A++ to `(typeof A)((A += 1) - 1)`
 static Node *new_inc_dec(Node *node, Token *tok, int addend) {
   add_type(node);
-  return new_cast(new_add(to_assign(new_add(node, new_num(addend, tok), tok)),
-                          new_num(-addend, tok), tok),
-                  node->ty);
+  Node *old = new_add(to_assign(new_add(node, new_num(addend, tok), tok)),
+                      new_num(-addend, tok), tok);
+
+  // kscc: num bitfield o valor novo já vem truncado à largura do campo
+  // (ver ND_ASSIGN em codegen.c); o valor antigo reconstruído precisa ser
+  // reduzido à mesma largura (`u : 12` com 4095: (0 - 1) & 0xfff).
+  // O resultado tem o tipo promovido do campo, int (ver promote_bitfield
+  // em type.c).
+  if (node->kind == ND_MEMBER && node->member->is_bitfield &&
+      node->member->bit_width < 32) {
+    int w = node->member->bit_width;
+    if (node->ty->is_unsigned || node->ty->kind == TY_BOOL) {
+      old = new_binary(ND_BITAND, old, new_num((1LL << w) - 1, tok), tok);
+    } else {
+      old = new_cast(old, ty_int);
+      old = new_binary(ND_SHL, old, new_num(32 - w, tok), tok);
+      old = new_binary(ND_SHR, old, new_num(32 - w, tok), tok);
+    }
+    return new_cast(old, ty_int);
+  }
+  return new_cast(old, node->ty);
 }
 
 // postfix = "(" type-name ")" "{" initializer-list "}"

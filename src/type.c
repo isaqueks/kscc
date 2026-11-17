@@ -187,7 +187,26 @@ static Type *get_common_type(Type *ty1, Type *ty2) {
 // be promoted to match with the other.
 //
 // This operation is called the "usual arithmetic conversion".
+// kscc: promoção inteira de bitfield (C11 6.3.1.1p2): um bitfield de
+// largura < 32 cabe em int e promove a int mesmo quando declarado unsigned
+// (`unsigned u : 12` → int). O chibicc usava o tipo declarado.
+// Vale também para o resultado de uma atribuição ao campo (`(s.u = x)`,
+// `++s.u`, `s.u += x`, que o parser transforma em vírgula + atribuição).
+static Node *promote_bitfield(Node *node) {
+  Node *n = node;
+  while (n->kind == ND_COMMA)
+    n = n->rhs;
+  if (n->kind == ND_ASSIGN)
+    n = n->lhs;
+  if (n->kind == ND_MEMBER && n->member->is_bitfield &&
+      n->member->bit_width < 32 && is_integer(node->ty))
+    return new_cast(node, ty_int);
+  return node;
+}
+
 static void usual_arith_conv(Node **lhs, Node **rhs) {
+  *lhs = promote_bitfield(*lhs);
+  *rhs = promote_bitfield(*rhs);
   Type *ty = get_common_type((*lhs)->ty, (*rhs)->ty);
   *lhs = new_cast(*lhs, ty);
   *rhs = new_cast(*rhs, ty);
@@ -226,6 +245,7 @@ void add_type(Node *node) {
     node->ty = node->lhs->ty;
     return;
   case ND_NEG: {
+    node->lhs = promote_bitfield(node->lhs);
     Type *ty = get_common_type(ty_int, node->lhs->ty);
     node->lhs = new_cast(node->lhs, ty);
     node->ty = ty;
@@ -259,6 +279,7 @@ void add_type(Node *node) {
     // kscc: promoção inteira do operando (C11 6.5.7p3, 6.5.3.3p4), que o
     // chibicc omitia. Com valores reduzidos ao tipo (eval e casts),
     // `(char)1 << 10` precisa ter tipo int.
+    node->lhs = promote_bitfield(node->lhs);
     if (is_integer(node->lhs->ty) && node->lhs->ty->size < 4)
       node->lhs = new_cast(node->lhs, ty_int);
     node->ty = node->lhs->ty;

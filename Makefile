@@ -1,50 +1,66 @@
-CFLAGS=-std=c11 -g -fno-common -Wall -Wno-switch
+# kscc — compilador C para a KSVM v2 (fork do chibicc).
+#
+#   make            constrói build/kscc
+#   make test       suite completa (unitários, chibicc adaptada, driver)
+#   make test-asan  idem, com o compilador construído com ASan/UBSan
+#   make clean
+#
+# Depende da ksvm2 construída (ksas, ksvm) em KSVM2_HOME.
 
-SRCS=$(wildcard *.c)
-OBJS=$(SRCS:.c=.o)
+KSVM2_HOME ?= ../ksvm2
+KSAS       ?= $(KSVM2_HOME)/build/ksas
+KSVM       ?= $(KSVM2_HOME)/build/tools/ksvm
 
-TEST_SRCS=$(wildcard test/*.c)
-TESTS=$(TEST_SRCS:.c=.exe)
+CC      ?= cc
+CFLAGS  ?= -std=c11 -g -fno-common -Wall -Wextra -Wno-switch -Werror
+LDFLAGS ?=
 
-# Stage 1
+ASAN_FLAGS = -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined
 
-chibicc: $(OBJS)
+SRCS = $(wildcard src/*.c)
+HDRS = $(wildcard src/*.h)
+
+# Caminho padrão do ksas embutido no binário (pode ser trocado em tempo de
+# execução por --ksas, $KSAS ou $KSVM2_HOME).
+DEFS = -DKSCC_DEFAULT_KSAS='"$(abspath $(KSAS))"'
+
+OBJS      = $(SRCS:src/%.c=build/obj/%.o)
+ASAN_OBJS = $(SRCS:src/%.c=build/asan/obj/%.o)
+
+all: build/kscc
+
+build/kscc: $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-$(OBJS): chibicc.h
+build/obj/%.o: src/%.c $(HDRS) Makefile
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $(DEFS) -c -o $@ $<
 
-test/%.exe: chibicc test/%.c
-	./chibicc -Iinclude -Itest -c -o test/$*.o test/$*.c
-	$(CC) -pthread -o $@ test/$*.o -xc test/common
+# Variante instrumentada (build/asan/kscc). O driver acha include/ e lib/
+# subindo a partir do diretório do binário (find_prefix em src/main.c).
+build/asan/kscc: $(ASAN_OBJS)
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $(ASAN_FLAGS) -o $@ $^ $(LDFLAGS)
 
-test: $(TESTS)
-	for i in $^; do echo $$i; ./$$i || exit 1; echo; done
-	test/driver.sh ./chibicc
+build/asan/obj/%.o: src/%.c $(HDRS) Makefile
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $(ASAN_FLAGS) $(DEFS) -c -o $@ $<
 
-test-all: test test-stage2
+check-ksvm2:
+	@test -x $(KSAS) || { echo "ksas nao encontrado em $(KSAS) (KSVM2_HOME=$(KSVM2_HOME))"; exit 1; }
+	@test -x $(KSVM) || { echo "ksvm nao encontrado em $(KSVM) (KSVM2_HOME=$(KSVM2_HOME))"; exit 1; }
 
-# Stage 2
+test: build/kscc check-ksvm2
+	KSAS=$(abspath $(KSAS)) KSVM=$(abspath $(KSVM)) test/run.sh build/kscc
+	KSAS=$(abspath $(KSAS)) KSVM=$(abspath $(KSVM)) test/chibicc/driver.sh build/kscc
 
-stage2/chibicc: $(OBJS:%=stage2/%)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
-
-stage2/%.o: chibicc %.c
-	mkdir -p stage2/test
-	./chibicc -c -o $(@D)/$*.o $*.c
-
-stage2/test/%.exe: stage2/chibicc test/%.c
-	mkdir -p stage2/test
-	./stage2/chibicc -Iinclude -Itest -c -o stage2/test/$*.o test/$*.c
-	$(CC) -pthread -o $@ stage2/test/$*.o -xc test/common
-
-test-stage2: $(TESTS:test/%=stage2/test/%)
-	for i in $^; do echo $$i; ./$$i || exit 1; echo; done
-	test/driver.sh ./stage2/chibicc
-
-# Misc.
+test-asan: build/asan/kscc check-ksvm2
+	ASAN_OPTIONS=detect_leaks=0 KSAS=$(abspath $(KSAS)) KSVM=$(abspath $(KSVM)) \
+	  test/run.sh build/asan/kscc
+	ASAN_OPTIONS=detect_leaks=0 KSAS=$(abspath $(KSAS)) KSVM=$(abspath $(KSVM)) \
+	  test/chibicc/driver.sh build/asan/kscc
 
 clean:
-	rm -rf chibicc tmp* $(TESTS) test/*.s test/*.exe stage2
-	find * -type f '(' -name '*~' -o -name '*.o' ')' -exec rm {} ';'
+	rm -rf build
 
-.PHONY: test clean test-stage2
+.PHONY: all test test-asan clean check-ksvm2

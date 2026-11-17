@@ -1,7 +1,8 @@
-#define _POSIX_C_SOURCE 200809L
+#define _XOPEN_SOURCE 700 // kscc: realpath (era _POSIX_C_SOURCE 200809L)
 #include <assert.h>
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <glob.h>
 #include <libgen.h>
 #include <stdarg.h>
@@ -144,6 +145,7 @@ struct Obj {
   bool is_tentative;
   bool is_tls;
   char *init_data;
+  bool is_str_lit; // kscc: literal de string (emitido em .rodata)
   Relocation *rel;
 
   // Function
@@ -292,6 +294,7 @@ struct Node {
 
 Node *new_cast(Node *expr, Type *ty);
 int64_t const_expr(Token **rest, Token *tok);
+int64_t pp_const_expr(Token **rest, Token *tok);
 Obj *parse(Token *tok);
 
 //
@@ -355,6 +358,7 @@ struct Type {
   Type *return_ty;
   Type *params;
   bool is_variadic;
+  bool is_oldstyle; // kscc: declarado como f(), sem protótipo
   Type *next;
 };
 
@@ -386,6 +390,8 @@ extern Type *ty_uchar;
 extern Type *ty_ushort;
 extern Type *ty_uint;
 extern Type *ty_ulong;
+extern Type *ty_llong;
+extern Type *ty_ullong;
 
 extern Type *ty_float;
 extern Type *ty_double;
@@ -455,3 +461,23 @@ extern StringArray include_paths;
 extern bool opt_fpic;
 extern bool opt_fcommon;
 extern char *base_file;
+extern char *unit_id;
+char *create_tmpfile(void);
+bool driver_dry_run(void);
+int run_subprocess_capture(char **argv, char *errfile);
+
+//
+// link.c
+//
+
+typedef struct {
+  char *ksas;      // caminho do ksas
+  char *prefix;    // diretório com include/ e lib/
+  bool nostdlib;   // sem crt0 e sem runtime
+  bool debug;      // -g para o ksas
+  int stack_size;  // rodapé .stack
+} LinkOptions;
+
+void ks_copy_file(char *src, char *dst);
+void ks_check_unit(LinkOptions *o, char *path, char *display);
+void ks_link(LinkOptions *o, StringArray *inputs, StringArray *names, char *output);

@@ -1,12 +1,27 @@
+// kscc: driver. Derivado do main.c do chibicc (Rui Ueyama, MIT).
+//
+// Diferenças em relação ao chibicc (doc 04):
+//  - "assemble" valida a unidade com o ksas e grava o .kso, que é o próprio
+//    texto .ksasm (não há formato de objeto binário);
+//  - "link" é a concatenação crt0 + .kso + runtime + rodapé, montada pelo
+//    ksas em um .ksx (src/link.c);
+//  - caminhos de include: só -I e <prefixo>/include, nunca /usr/include;
+//  - opções de linker do host (-static, -shared, -L, -l, -Xlinker) saem.
+
 #include "chibicc.h"
 
 typedef enum {
-  FILE_NONE, FILE_C, FILE_ASM, FILE_OBJ, FILE_AR, FILE_DSO,
+  FILE_NONE, FILE_C, FILE_ASM, FILE_OBJ,
 } FileType;
 
 StringArray include_paths;
-bool opt_fcommon = true;
+// kscc: sem diretiva .comm no ksas; definições provisórias viram .bss
+// comuns (como -fno-common). Ver test/chibicc/SKIP (commonsym.c).
+bool opt_fcommon = false;
 bool opt_fpic;
+
+// Identificador curto e único da unidade de tradução (doc 02 §5).
+char *unit_id;
 
 static FileType opt_x;
 static StringArray opt_include;
@@ -19,13 +34,14 @@ static bool opt_S;
 static bool opt_c;
 static bool opt_cc1;
 static bool opt_hash_hash_hash;
-static bool opt_static;
-static bool opt_shared;
+static bool opt_nostdlib;
+static bool opt_g;
 static char *opt_MF;
 static char *opt_MT;
 static char *opt_o;
+static char *opt_ksas;
+static int opt_stack = 4096;
 
-static StringArray ld_extra_args;
 static StringArray std_include_paths;
 
 char *base_file;
@@ -35,30 +51,92 @@ static StringArray input_paths;
 static StringArray tmpfiles;
 
 static void usage(int status) {
-  fprintf(stderr, "chibicc [ -o <path> ] <file>\n");
+  FILE *out = status ? stderr : stdout;
+  fprintf(out,
+    "uso: kscc [opcoes] arquivo...\n"
+    "\n"
+    "kscc: compilador C para a maquina virtual KSVM v2.\n"
+    "Fork do chibicc (https://github.com/rui314/chibicc), (c) Rui Ueyama, licenca MIT.\n"
+    "\n"
+    "  -o <arq>           saida (padrao: a.ksx; com -c: .kso; com -S: .ksasm)\n"
+    "  -S                 so gera o assembly .ksasm\n"
+    "  -c                 compila e valida a unidade -> .kso (texto .ksasm)\n"
+    "  -E                 so o preprocessador\n"
+    "  -I <dir>           acrescenta diretorio de include\n"
+    "  -D NOME[=val]      define macro\n"
+    "  -U NOME            remove macro\n"
+    "  -include <arq>     inclui <arq> antes do fonte\n"
+    "  -x c|assembler|none  tipo dos arquivos seguintes\n"
+    "  -nostdlib          nao acrescenta crt0 nem runtime no link\n"
+    "  -g                 passa -g ao ksas (tabela de simbolos completa)\n"
+    "  -Wl,--stack=N      tamanho da pilha do programa (padrao 4096)\n"
+    "  --ksas <caminho>   ksas a usar (padrao: $KSAS, $KSVM2_HOME/build/ksas)\n"
+    "  -###               mostra os comandos sem executa-los\n"
+    "  -M -MD -MMD -MF -MP -MT -MQ  dependencias para o make\n"
+    "  --help             esta ajuda\n");
   exit(status);
 }
 
 static bool take_arg(char *arg) {
   char *x[] = {
-    "-o", "-I", "-idirafter", "-include", "-x", "-MF", "-MT", "-Xlinker",
+    "-o", "-I", "-idirafter", "-include", "-x", "-MF", "-MT", "-MQ",
+    "-D", "-U", "--ksas",
   };
 
-  for (int i = 0; i < sizeof(x) / sizeof(*x); i++)
+  for (int i = 0; i < (int)(sizeof(x) / sizeof(*x)); i++)
     if (!strcmp(arg, x[i]))
       return true;
   return false;
 }
 
-static void add_default_include_paths(char *argv0) {
-  // We expect that chibicc-specific include files are installed
-  // to ./include relative to argv[0].
-  strarray_push(&include_paths, format("%s/include", dirname(strdup(argv0))));
+static bool endswith(char *p, char *q) {
+  int len1 = strlen(p);
+  int len2 = strlen(q);
+  return (len1 >= len2) && !strcmp(p + len1 - len2, q);
+}
 
-  // Add standard include paths.
-  strarray_push(&include_paths, "/usr/local/include");
-  strarray_push(&include_paths, "/usr/include/x86_64-linux-gnu");
-  strarray_push(&include_paths, "/usr/include");
+// Returns true if a given file exists.
+bool file_exists(char *path) {
+  struct stat st;
+  return !stat(path, &st);
+}
+
+// kscc: o "prefixo" é o diretório que contém include/ e lib/ (crt0 e
+// runtime). Procura subindo a partir do diretório do binário, o que cobre
+// build/kscc e build/asan/kscc dentro do repositório. $KSCC_PREFIX tem
+// precedência.
+static char *prefix_dir;
+
+static char *find_prefix(char *argv0) {
+  if (prefix_dir)
+    return prefix_dir;
+
+  char *env = getenv("KSCC_PREFIX");
+  if (env && *env)
+    return prefix_dir = env;
+
+  char *self = realpath("/proc/self/exe", NULL);
+  if (!self)
+    self = realpath(argv0, NULL);
+  if (!self)
+    self = strdup(argv0);
+
+  char *dir = dirname(strdup(self));
+  for (int i = 0; i < 4; i++) {
+    dir = dirname(strdup(dir));
+    if (file_exists(format("%s/lib/crt0.ksasm", dir)) &&
+        file_exists(format("%s/include/stddef.h", dir)))
+      return prefix_dir = dir;
+  }
+
+  // Fallback: <dir do binário>/.. mesmo sem os arquivos, para que as
+  // mensagens de erro mostrem onde eles eram esperados.
+  return prefix_dir = dirname(dirname(strdup(self)));
+}
+
+static void add_default_include_paths(char *argv0) {
+  // kscc: só os headers do próprio kscc; nunca /usr/include (LP64/glibc).
+  strarray_push(&include_paths, format("%s/include", find_prefix(argv0)));
 
   // Keep a copy of the standard include paths for -MMD option.
   for (int i = 0; i < include_paths.len; i++)
@@ -76,11 +154,11 @@ static void define(char *str) {
 static FileType parse_opt_x(char *s) {
   if (!strcmp(s, "c"))
     return FILE_C;
-  if (!strcmp(s, "assembler"))
+  if (!strcmp(s, "assembler") || !strcmp(s, "ksasm"))
     return FILE_ASM;
   if (!strcmp(s, "none"))
     return FILE_NONE;
-  error("<command line>: unknown argument for -x: %s", s);
+  error("<linha de comando>: argumento desconhecido para -x: %s", s);
 }
 
 static char *quote_makefile(char *s) {
@@ -111,6 +189,27 @@ static char *quote_makefile(char *s) {
   return buf;
 }
 
+// kscc: -Wl,opção[,opção...]. Só --stack=N existe (rodapé .stack do link).
+static void parse_wl(char *arg) {
+  char *s = strdup(arg + 4);
+  for (char *opt = strtok(s, ","); opt; opt = strtok(NULL, ",")) {
+    char *val = NULL;
+    if (!strncmp(opt, "--stack=", 8))
+      val = opt + 8;
+    else if (!strcmp(opt, "--stack"))
+      val = strtok(NULL, ",");
+
+    if (!val)
+      error("<linha de comando>: opcao de link desconhecida: %s", opt);
+
+    char *end;
+    long n = strtol(val, &end, 0);
+    if (*end || n <= 0 || n > 0x10000000 || n % 4)
+      error("<linha de comando>: --stack espera um numero positivo multiplo de 4: %s", val);
+    opt_stack = n;
+  }
+}
+
 static void parse_args(int argc, char **argv) {
   // Make sure that all command line options that take an argument
   // have an argument.
@@ -119,7 +218,7 @@ static void parse_args(int argc, char **argv) {
       if (!argv[++i])
         usage(1);
 
-  StringArray idirafter = {};
+  StringArray idirafter = {0};
 
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "-###")) {
@@ -151,7 +250,7 @@ static void parse_args(int argc, char **argv) {
     }
 
     if (!strcmp(argv[i], "-fcommon")) {
-      opt_fcommon = true;
+      // kscc: aceito, mas sem efeito (ver opt_fcommon).
       continue;
     }
 
@@ -167,6 +266,11 @@ static void parse_args(int argc, char **argv) {
 
     if (!strcmp(argv[i], "-E")) {
       opt_E = true;
+      continue;
+    }
+
+    if (!strcmp(argv[i], "-I")) {
+      strarray_push(&include_paths, argv[++i]);
       continue;
     }
 
@@ -210,18 +314,18 @@ static void parse_args(int argc, char **argv) {
       continue;
     }
 
-    if (!strncmp(argv[i], "-l", 2) || !strncmp(argv[i], "-Wl,", 4)) {
-      strarray_push(&input_paths, argv[i]);
+    if (!strncmp(argv[i], "-Wl,", 4)) {
+      parse_wl(argv[i]);
       continue;
     }
 
-    if (!strcmp(argv[i], "-Xlinker")) {
-      strarray_push(&ld_extra_args, argv[++i]);
+    if (!strcmp(argv[i], "-nostdlib")) {
+      opt_nostdlib = true;
       continue;
     }
 
-    if (!strcmp(argv[i], "-s")) {
-      strarray_push(&ld_extra_args, "-s");
+    if (!strcmp(argv[i], "--ksas")) {
+      opt_ksas = argv[++i];
       continue;
     }
 
@@ -267,6 +371,8 @@ static void parse_args(int argc, char **argv) {
     }
 
     if (!strcmp(argv[i], "-fpic") || !strcmp(argv[i], "-fPIC")) {
+      // kscc: aceito e ignorado; o ksas tem .pic, mas o link por
+      // concatenação ainda não precisa dele.
       opt_fpic = true;
       continue;
     }
@@ -282,31 +388,7 @@ static void parse_args(int argc, char **argv) {
     }
 
     if (!strcmp(argv[i], "-idirafter")) {
-      strarray_push(&idirafter, argv[i++]);
-      continue;
-    }
-
-    if (!strcmp(argv[i], "-static")) {
-      opt_static = true;
-      strarray_push(&ld_extra_args, "-static");
-      continue;
-    }
-
-    if (!strcmp(argv[i], "-shared")) {
-      opt_shared = true;
-      strarray_push(&ld_extra_args, "-shared");
-      continue;
-    }
-
-    if (!strcmp(argv[i], "-L")) {
-      strarray_push(&ld_extra_args, "-L");
-      strarray_push(&ld_extra_args, argv[++i]);
-      continue;
-    }
-
-    if (!strncmp(argv[i], "-L", 2)) {
-      strarray_push(&ld_extra_args, "-L");
-      strarray_push(&ld_extra_args, argv[i] + 2);
+      strarray_push(&idirafter, argv[++i]);
       continue;
     }
 
@@ -315,23 +397,37 @@ static void parse_args(int argc, char **argv) {
       exit(0);
     }
 
+    if (!strcmp(argv[i], "-g")) {
+      opt_g = true;
+      continue;
+    }
+
+    if (!strcmp(argv[i], "-ffreestanding")) {
+      undef_macro("__STDC_HOSTED__");
+      define_macro("__STDC_HOSTED__", "0");
+      continue;
+    }
+
+    // kscc: opções de link do host não têm equivalente na KSVM.
+    if (!strncmp(argv[i], "-l", 2) || !strncmp(argv[i], "-L", 2) ||
+        !strcmp(argv[i], "-static") || !strcmp(argv[i], "-shared") ||
+        !strcmp(argv[i], "-Xlinker"))
+      error("opcao nao suportada nesta versao do kscc: %s", argv[i]);
+
     // These options are ignored for now.
     if (!strncmp(argv[i], "-O", 2) ||
         !strncmp(argv[i], "-W", 2) ||
         !strncmp(argv[i], "-g", 2) ||
         !strncmp(argv[i], "-std=", 5) ||
-        !strcmp(argv[i], "-ffreestanding") ||
         !strcmp(argv[i], "-fno-builtin") ||
         !strcmp(argv[i], "-fno-omit-frame-pointer") ||
         !strcmp(argv[i], "-fno-stack-protector") ||
         !strcmp(argv[i], "-fno-strict-aliasing") ||
-        !strcmp(argv[i], "-m64") ||
-        !strcmp(argv[i], "-mno-red-zone") ||
         !strcmp(argv[i], "-w"))
       continue;
 
     if (argv[i][0] == '-' && argv[i][1] != '\0')
-      error("unknown argument: %s", argv[i]);
+      error("argumento desconhecido: %s", argv[i]);
 
     strarray_push(&input_paths, argv[i]);
   }
@@ -340,7 +436,7 @@ static void parse_args(int argc, char **argv) {
     strarray_push(&include_paths, idirafter.data[i]);
 
   if (input_paths.len == 0)
-    error("no input files");
+    error("nenhum arquivo de entrada");
 
   // -E implies that the input is the C macro language.
   if (opt_E)
@@ -353,14 +449,8 @@ static FILE *open_file(char *path) {
 
   FILE *out = fopen(path, "w");
   if (!out)
-    error("cannot open output file: %s: %s", path, strerror(errno));
+    error("nao foi possivel abrir o arquivo de saida: %s: %s", path, strerror(errno));
   return out;
-}
-
-static bool endswith(char *p, char *q) {
-  int len1 = strlen(p);
-  int len2 = strlen(q);
-  return (len1 >= len2) && !strcmp(p + len1 - len2, q);
 }
 
 // Replace file extension
@@ -377,37 +467,70 @@ static void cleanup(void) {
     unlink(tmpfiles.data[i]);
 }
 
-static char *create_tmpfile(void) {
-  char *path = strdup("/tmp/chibicc-XXXXXX");
+char *create_tmpfile(void) {
+  char *path = strdup("/tmp/kscc-XXXXXX");
   int fd = mkstemp(path);
   if (fd == -1)
-    error("mkstemp failed: %s", strerror(errno));
+    error("mkstemp falhou: %s", strerror(errno));
   close(fd);
 
   strarray_push(&tmpfiles, path);
   return path;
 }
 
-static void run_subprocess(char **argv) {
-  // If -### is given, dump the subprocess's command line.
+bool driver_dry_run(void) {
+  return opt_hash_hash_hash;
+}
+
+static void print_command(char **argv) {
+  fprintf(stderr, "%s", argv[0]);
+  for (int i = 1; argv[i]; i++)
+    fprintf(stderr, " %s", argv[i]);
+  fprintf(stderr, "\n");
+}
+
+// kscc: com -### os comandos são mostrados e não executados (como o gcc;
+// o chibicc mostrava e executava).
+int run_subprocess_capture(char **argv, char *errfile) {
   if (opt_hash_hash_hash) {
-    fprintf(stderr, "%s", argv[0]);
-    for (int i = 1; argv[i]; i++)
-      fprintf(stderr, " %s", argv[i]);
-    fprintf(stderr, "\n");
+    print_command(argv);
+    return 0;
   }
 
-  if (fork() == 0) {
+  fflush(stdout);
+  fflush(stderr);
+
+  pid_t pid = fork();
+  if (pid == -1)
+    error("fork falhou: %s", strerror(errno));
+
+  if (pid == 0) {
     // Child process. Run a new command.
+    if (errfile) {
+      int fd = open(errfile, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+      if (fd != -1) {
+        dup2(fd, 2);
+        close(fd);
+      }
+    }
     execvp(argv[0], argv);
-    fprintf(stderr, "exec failed: %s: %s\n", argv[0], strerror(errno));
-    _exit(1);
+    fprintf(stderr, "kscc: falha ao executar %s: %s\n", argv[0], strerror(errno));
+    _exit(127);
   }
 
   // Wait for the child process to finish.
   int status;
-  while (wait(&status) > 0);
-  if (status != 0)
+  while (waitpid(pid, &status, 0) == -1)
+    if (errno != EINTR)
+      error("waitpid falhou: %s", strerror(errno));
+
+  if (WIFEXITED(status))
+    return WEXITSTATUS(status);
+  return 128;
+}
+
+static void run_subprocess(char **argv) {
+  if (run_subprocess_capture(argv, NULL) != 0)
     exit(1);
 }
 
@@ -443,6 +566,8 @@ static void print_tokens(Token *tok) {
     line++;
   }
   fprintf(out, "\n");
+  if (out != stdout)
+    fclose(out);
 }
 
 static bool in_std_include_path(char *path) {
@@ -473,7 +598,7 @@ static void print_dependencies(void) {
   if (opt_MT)
     fprintf(out, "%s:", opt_MT);
   else
-    fprintf(out, "%s:", quote_makefile(replace_extn(base_file, ".o")));
+    fprintf(out, "%s:", quote_makefile(replace_extn(base_file, ".kso")));
 
   File **files = get_input_files();
 
@@ -492,6 +617,8 @@ static void print_dependencies(void) {
       fprintf(out, "%s:\n\n", quote_makefile(files[i]->name));
     }
   }
+  if (out != stdout)
+    fclose(out);
 }
 
 static Token *must_tokenize_file(char *path) {
@@ -512,7 +639,26 @@ static Token *append_tokens(Token *tok1, Token *tok2) {
   return tok1;
 }
 
+// kscc: identificador da unidade (doc 02 §5): FNV-1a de 32 bits do caminho
+// absoluto do fonte. Entra nos nomes de símbolos static (_S<id>_nome) e de
+// todos os labels gerados (L<id>.else.3), que precisam ser únicos depois da
+// concatenação de várias unidades no link.
+static char *make_unit_id(char *path) {
+  char *abs = strcmp(path, "-") ? realpath(path, NULL) : NULL;
+  char *s = abs ? abs : path;
+
+  uint32_t h = 2166136261u;
+  for (unsigned char *p = (unsigned char *)s; *p; p++) {
+    h ^= *p;
+    h *= 16777619u;
+  }
+  free(abs);
+  return format("%08x", h);
+}
+
 static void cc1(void) {
+  unit_id = make_unit_id(base_file);
+
   Token *tok = NULL;
 
   // Process -include option
@@ -564,137 +710,66 @@ static void cc1(void) {
   // Write the asembly text to a file.
   FILE *out = open_file(output_file);
   fwrite(buf, buflen, 1, out);
-  fclose(out);
+  if (out != stdout)
+    fclose(out);
 }
 
-static void assemble(char *input, char *output) {
-  char *cmd[] = {"as", "-c", input, "-o", output, NULL};
-  run_subprocess(cmd);
+// kscc: ksas a usar. Ordem: --ksas, $KSAS, $KSVM2_HOME/build/ksas,
+// caminho do Makefile embutido no binário, "ksas" no PATH.
+static char *ksas_path(void) {
+  if (opt_ksas)
+    return opt_ksas;
+
+  char *env = getenv("KSAS");
+  if (env && *env)
+    return env;
+
+  env = getenv("KSVM2_HOME");
+  if (env && *env)
+    return format("%s/build/ksas", env);
+
+#ifdef KSCC_DEFAULT_KSAS
+  if (file_exists(KSCC_DEFAULT_KSAS))
+    return KSCC_DEFAULT_KSAS;
+#endif
+  return "ksas";
 }
 
-static char *find_file(char *pattern) {
-  char *path = NULL;
-  glob_t buf = {};
-  glob(pattern, 0, NULL, &buf);
-  if (buf.gl_pathc > 0)
-    path = strdup(buf.gl_pathv[buf.gl_pathc - 1]);
-  globfree(&buf);
-  return path;
+static LinkOptions link_options(char *argv0) {
+  LinkOptions o = {0};
+  o.ksas = ksas_path();
+  o.prefix = find_prefix(argv0);
+  o.nostdlib = opt_nostdlib;
+  o.debug = opt_g;
+  o.stack_size = opt_stack;
+  return o;
 }
 
-// Returns true if a given file exists.
-bool file_exists(char *path) {
-  struct stat st;
-  return !stat(path, &st);
+// kscc: "montar" uma unidade = validar com o ksas e copiar o texto para o
+// .kso (doc 04 §3).
+static void assemble(char *argv0, char *input, char *display, char *output) {
+  LinkOptions o = link_options(argv0);
+  ks_check_unit(&o, input, display);
+  ks_copy_file(input, output);
 }
 
-static char *find_libpath(void) {
-  if (file_exists("/usr/lib/x86_64-linux-gnu/crti.o"))
-    return "/usr/lib/x86_64-linux-gnu";
-  if (file_exists("/usr/lib64/crti.o"))
-    return "/usr/lib64";
-  error("library path is not found");
-}
-
-static char *find_gcc_libpath(void) {
-  char *paths[] = {
-    "/usr/lib/gcc/x86_64-linux-gnu/*/crtbegin.o",
-    "/usr/lib/gcc/x86_64-pc-linux-gnu/*/crtbegin.o", // For Gentoo
-    "/usr/lib/gcc/x86_64-redhat-linux/*/crtbegin.o", // For Fedora
-  };
-
-  for (int i = 0; i < sizeof(paths) / sizeof(*paths); i++) {
-    char *path = find_file(paths[i]);
-    if (path)
-      return dirname(path);
-  }
-
-  error("gcc library path is not found");
-}
-
-static void run_linker(StringArray *inputs, char *output) {
-  StringArray arr = {};
-
-  strarray_push(&arr, "ld");
-  strarray_push(&arr, "-o");
-  strarray_push(&arr, output);
-  strarray_push(&arr, "-m");
-  strarray_push(&arr, "elf_x86_64");
-
-  char *libpath = find_libpath();
-  char *gcc_libpath = find_gcc_libpath();
-
-  if (opt_shared) {
-    strarray_push(&arr, format("%s/crti.o", libpath));
-    strarray_push(&arr, format("%s/crtbeginS.o", gcc_libpath));
-  } else {
-    strarray_push(&arr, format("%s/crt1.o", libpath));
-    strarray_push(&arr, format("%s/crti.o", libpath));
-    strarray_push(&arr, format("%s/crtbegin.o", gcc_libpath));
-  }
-
-  strarray_push(&arr, format("-L%s", gcc_libpath));
-  strarray_push(&arr, "-L/usr/lib/x86_64-linux-gnu");
-  strarray_push(&arr, "-L/usr/lib64");
-  strarray_push(&arr, "-L/lib64");
-  strarray_push(&arr, "-L/usr/lib/x86_64-linux-gnu");
-  strarray_push(&arr, "-L/usr/lib/x86_64-pc-linux-gnu");
-  strarray_push(&arr, "-L/usr/lib/x86_64-redhat-linux");
-  strarray_push(&arr, "-L/usr/lib");
-  strarray_push(&arr, "-L/lib");
-
-  if (!opt_static) {
-    strarray_push(&arr, "-dynamic-linker");
-    strarray_push(&arr, "/lib64/ld-linux-x86-64.so.2");
-  }
-
-  for (int i = 0; i < ld_extra_args.len; i++)
-    strarray_push(&arr, ld_extra_args.data[i]);
-
-  for (int i = 0; i < inputs->len; i++)
-    strarray_push(&arr, inputs->data[i]);
-
-  if (opt_static) {
-    strarray_push(&arr, "--start-group");
-    strarray_push(&arr, "-lgcc");
-    strarray_push(&arr, "-lgcc_eh");
-    strarray_push(&arr, "-lc");
-    strarray_push(&arr, "--end-group");
-  } else {
-    strarray_push(&arr, "-lc");
-    strarray_push(&arr, "-lgcc");
-    strarray_push(&arr, "--as-needed");
-    strarray_push(&arr, "-lgcc_s");
-    strarray_push(&arr, "--no-as-needed");
-  }
-
-  if (opt_shared)
-    strarray_push(&arr, format("%s/crtendS.o", gcc_libpath));
-  else
-    strarray_push(&arr, format("%s/crtend.o", gcc_libpath));
-
-  strarray_push(&arr, format("%s/crtn.o", libpath));
-  strarray_push(&arr, NULL);
-
-  run_subprocess(arr.data);
+static void run_linker(char *argv0, StringArray *inputs, StringArray *names, char *output) {
+  LinkOptions o = link_options(argv0);
+  ks_link(&o, inputs, names, output);
 }
 
 static FileType get_file_type(char *filename) {
   if (opt_x != FILE_NONE)
     return opt_x;
 
-  if (endswith(filename, ".a"))
-    return FILE_AR;
-  if (endswith(filename, ".so"))
-    return FILE_DSO;
-  if (endswith(filename, ".o"))
+  if (endswith(filename, ".kso"))
     return FILE_OBJ;
   if (endswith(filename, ".c"))
     return FILE_C;
-  if (endswith(filename, ".s"))
+  if (endswith(filename, ".ksasm") || endswith(filename, ".s"))
     return FILE_ASM;
 
-  error("<command line>: unknown file extension: %s", filename);
+  error("<linha de comando>: extensao de arquivo desconhecida: %s", filename);
 }
 
 int main(int argc, char **argv) {
@@ -708,49 +783,49 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  if (input_paths.len > 1 && opt_o && (opt_c || opt_S | opt_E))
-    error("cannot specify '-o' with '-c,' '-S' or '-E' with multiple files");
+  if (input_paths.len > 1 && opt_o && (opt_c || opt_S || opt_E))
+    error("nao e possivel usar '-o' com '-c', '-S' ou '-E' e varios arquivos");
 
-  StringArray ld_args = {};
+  // kscc: objetos (.kso) a concatenar no link, com o nome de exibição de
+  // cada um para as mensagens de erro do ksas.
+  StringArray ld_args = {0};
+  StringArray ld_names = {0};
 
   for (int i = 0; i < input_paths.len; i++) {
     char *input = input_paths.data[i];
 
-    if (!strncmp(input, "-l", 2)) {
-      strarray_push(&ld_args, input);
-      continue;
-    }
-
-    if (!strncmp(input, "-Wl,", 4)) {
-      char *s = strdup(input + 4);
-      char *arg = strtok(s, ",");
-      while (arg) {
-        strarray_push(&ld_args, arg);
-        arg = strtok(NULL, ",");
-      }
-      continue;
-    }
+    if (strcmp(input, "-") && !opt_hash_hash_hash && !file_exists(input))
+      error("%s: arquivo nao encontrado", input);
 
     char *output;
     if (opt_o)
       output = opt_o;
     else if (opt_S)
-      output = replace_extn(input, ".s");
+      output = replace_extn(input, ".ksasm");
     else
-      output = replace_extn(input, ".o");
+      output = replace_extn(input, ".kso");
 
     FileType type = get_file_type(input);
 
-    // Handle .o or .a
-    if (type == FILE_OBJ || type == FILE_AR || type == FILE_DSO) {
+    // Handle .kso
+    if (type == FILE_OBJ) {
+      if (opt_c || opt_S || opt_E)
+        continue;
       strarray_push(&ld_args, input);
+      strarray_push(&ld_names, input);
       continue;
     }
 
-    // Handle .s
+    // Handle .ksasm
     if (type == FILE_ASM) {
-      if (!opt_S)
-        assemble(input, output);
+      if (opt_S || opt_E)
+        continue;
+      if (opt_c) {
+        assemble(argv[0], input, input, output);
+        continue;
+      }
+      strarray_push(&ld_args, input);
+      strarray_push(&ld_names, input);
       continue;
     }
 
@@ -772,20 +847,20 @@ int main(int argc, char **argv) {
     if (opt_c) {
       char *tmp = create_tmpfile();
       run_cc1(argc, argv, input, tmp);
-      assemble(tmp, output);
+      assemble(argv[0], tmp, input, output);
       continue;
     }
 
     // Compile, assemble and link
-    char *tmp1 = create_tmpfile();
-    char *tmp2 = create_tmpfile();
-    run_cc1(argc, argv, input, tmp1);
-    assemble(tmp1, tmp2);
-    strarray_push(&ld_args, tmp2);
-    continue;
+    // kscc: sem validação por unidade aqui: os erros do ksas no link já
+    // são atribuídos ao arquivo de origem (ver link.c).
+    char *tmp = create_tmpfile();
+    run_cc1(argc, argv, input, tmp);
+    strarray_push(&ld_args, tmp);
+    strarray_push(&ld_names, input);
   }
 
   if (ld_args.len > 0)
-    run_linker(&ld_args, opt_o ? opt_o : "a.out");
+    run_linker(argv[0], &ld_args, &ld_names, opt_o ? opt_o : "a.ksx");
   return 0;
 }

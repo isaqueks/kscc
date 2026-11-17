@@ -13,7 +13,13 @@
 
 ## 1. Fases
 
-### Fase 0 — Fork e esqueleto
+**Estado (17/11/2026): fases 0–4 concluídas e revisadas.** v1 entregue: 122 testes unitários,
+37/41 arquivos da suite do chibicc, 43 programas diferenciais idênticos ao `gcc -m32`, fuzz
+Csmith + gerador próprio sem divergência, `hello`/`blink`/`selftest` em C rodando em simavr e
+QEMU. Duas revisões adversariais independentes corrigiram 15 bugs no compilador (8 de código
+errado silencioso, a maioria herdada do chibicc) e 2 na libks.
+
+### Fase 0 — Fork e esqueleto ✅
 - Clonar chibicc (commit `90d1f7f`, 2020-12-07), renomear para `kscc`, manter `LICENSE`.
 - `Makefile` do projeto: constrói `kscc`, encontra `ksas`/`ksvm` (variável `KSVM2_HOME`,
   padrão `../ksvm2/build`), alvo `test`.
@@ -23,7 +29,7 @@
 
 Critério: `int main(){ return 42; }` → `ksvm` sai com 42.
 
-### Fase 1 — Inteiros, locais, controle de fluxo (núcleo do codegen)
+### Fase 1 — Inteiros, locais, controle de fluxo (núcleo do codegen) ✅
 - `type.c` ILP32. Erro explícito para `long long`, float, TLS, atomic, asm.
 - `gen_expr`: `ND_NUM`, `ND_VAR` local, `ND_ASSIGN` escalar, binários inteiros, unários,
   comparações, `&&`/`||`/`!`, `ND_COND`, `ND_COMMA`, `ND_CAST` entre inteiros.
@@ -35,7 +41,7 @@ Critério: `int main(){ return 42; }` → `ksvm` sai com 42.
 Critério: `test/unit` para cada item + `arith.c`, `control.c`, `function.c` (parte), `cast.c`,
 `usualconv.c`, `variable.c` (parte) da suite passando.
 
-### Fase 2 — Memória: ponteiros, globais, arrays, structs, strings, inicializadores
+### Fase 2 — Memória: ponteiros, globais, arrays, structs, strings, inicializadores ✅
 - `gen_addr` completo, `load`/`store` por tamanho, `ND_DEREF`/`ND_ADDR`/`ND_MEMBER`.
 - `emit_data`: globais, `.rodata`, strings, `.word sym+off`, `.bss`, `.align`.
 - Structs/unions: cópia, passagem por valor, retorno (≤ 4 em `r1`, maior via ponteiro oculto).
@@ -47,7 +53,7 @@ Critério: `pointer.c`, `struct.c`, `union.c`, `initializer.c`, `string.c`, `lit
 `sizeof.c`, `alignof.c`, `offsetof.c`, `bitfield.c`, `complit.c`, `extern.c`, `commonsym.c`,
 `variable.c` passando.
 
-### Fase 3 — Varargs, alloca/VLA, builtins, resto da suite
+### Fase 3 — Varargs, alloca/VLA, builtins, resto da suite ✅
 - Convenção variádica (tudo na pilha), `va_start`/`va_arg` builtins, `varargs.c`.
 - `alloca`/VLA (opcional, mas o chibicc os tem prontos; portar `builtin_alloca`).
 - `_Generic`, `typeof`, `constexpr`, `enum`, `typedef`, `macro`, `include`, `line`,
@@ -57,7 +63,7 @@ Critério: `pointer.c`, `struct.c`, `union.c`, `initializer.c`, `string.c`, `lit
 
 Critério: toda a suite mantida do chibicc passa (exceto float/ll atrás de `#ifdef`).
 
-### Fase 4 — `libks` e programas reais
+### Fase 4 — `libks` e programas reais ✅
 - `crt0`, wrappers de syscall, `string`, `ctype`, `stdlib` (com `malloc`), `stdio` (`printf`).
 - `assert_eq` da suite passa a usar a `libks` (até aqui `common.c` pode ter um `printf`
   mínimo próprio).
@@ -69,7 +75,17 @@ Critério: toda a suite mantida do chibicc passa (exceto float/ll atrás de `#if
 Critério: **v1 pronta**. Um programa C com `malloc`, `printf`, structs e ponteiros de função
 roda no desktop e no AVR.
 
+Pendências conhecidas da v1 (listadas pelas revisões): `_Static_assert` não aceito; `goto` para
+trás antes de um VLA no mesmo bloco vaza pilha; layout de bitfield em struct `packed` difere do
+gcc; `_Generic` ignora `const`; `__has_include` e definições K&R não suportados; `printf` sem
+`iscntrl`/`strtok`/`strerror` na libks e `atexit` limitado a 8; `printf.c` responde por boa parte
+dos ~14 KB de um `hello` (vale uma variante reduzida para AVR).
+
 ### Fase 5 — `long long` (64 bits)
+
+(Pré-requisito, junto com a fase 6 e `FILE*`/`fopen` na libks, do **stage 2**: compilar o próprio
+kscc com o kscc e rodá-lo dentro do `ksvm`. O chibicc guarda constantes em `int64_t` e literais em
+`long double`, e o driver precisa de um modo `cc1` em processo único, sem `fork`/`exec`.)
 - Par de registradores `r1:r2` para valores de 64 bits no acumulador; `push`/`pop` duplos;
   `add`/`sub` com `adc`/`sbc`; `mul` com `mulhu` + produtos cruzados; `div`/`rem` por chamada a
   `__ks_divdi3` etc. na `libks` (em C com `unsigned` de 32 bits, estilo libgcc); shifts por

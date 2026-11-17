@@ -151,8 +151,9 @@ callr r5
 ; 6. addi sp, sp, bytes_na_pilha     (se houver)
 ; 7. retorno de char/short/bool: o chamado já estende; nada a fazer (chibicc re-estende; manter por segurança: sxb/zxb)
 ```
-Detalhe: o chibicc empilha `fn` **antes** dos argumentos e faz `pop %r10` depois de distribuir
-os registradores; o kscc usa `r5` no lugar de `r10`.
+Detalhe: como no chibicc atual, o endereço da função é avaliado **depois** dos argumentos e
+movido para `r5` (o papel do `%r10` no x86-64); o passo 1 acima descreve a ordem lógica, não a
+ordem de emissão.
 
 ### Prólogo e epílogo (`emit_text`)
 Ver doc 02 §4. `assign_lvar_offsets` muda só o alinhamento máximo (4) e o cálculo do

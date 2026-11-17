@@ -14,8 +14,7 @@ kscc [opções] arquivo.c ...          # compila, monta e "linka" → a.ksx
   -Wl,--no-gc-sections  liga a libks inteira (padrão: só o que é referenciado)
   (libks fica em build/libks/libks.kso ao lado do kscc que a compilou; $KSCC_LIBDIR troca)
   -g                 passa -g ao ksas (tabela de símbolos completa)
-  -fverbose-asm      comentários com a linha C ao lado de cada bloco
-  --ksas <caminho>   --ksvm <caminho>   (padrão: KSVM2_HOME ou PATH)
+  --ksas <caminho>   assembler a usar (padrão: KSVM2_HOME/build/ksas)
   -###               mostra os comandos sem executar
 ```
 Mantém a estrutura `run_cc1` do chibicc (o driver re-invoca a si mesmo com `-cc1` por arquivo),

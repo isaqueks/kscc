@@ -45,7 +45,7 @@ heap_start ──► [cabeçalho][bloco][cabeçalho][bloco] … ──► brk �
 - Em AVR com 1 KB de RAM isso ainda funciona (é o mesmo algoritmo da avr-libc).
 - `KS_MALLOC_DEBUG` (compile-time): preenche blocos liberados com `0xDD` e checa cabeçalhos.
 
-## 4. Camada de teste (`libks/test/`)
+## 4. Camada de teste (`test/chibicc/common.c`)
 
 `assert_eq(int expected, int actual, const char *code)` usado pela suite do chibicc
 (`test/common`), imprimindo `code => actual expected expected` e saindo com 1 na falha.

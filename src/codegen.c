@@ -46,6 +46,13 @@ typedef struct {
 static ScopeDepth *scope_depth;
 static int scope_len, scope_cap;
 
+// kscc: blocos com VLA (Node::vla_save): label_vla liga cada label ao
+// bloco com VLA mais interno que o contém (top_scope se nenhum), e
+// vla_blocks é a pilha dos que estão sendo gerados.
+static HashMap label_vla;
+static Node **vla_blocks;
+static int vla_len, vla_cap;
+
 __attribute__((format(printf, 1, 2)))
 static void println(char *fmt, ...) {
   va_list ap;
@@ -925,53 +932,69 @@ static void gen_expr(Node *node) {
 // ND_STMT_EXPR ativo começou, que é o `depth` dos seus labels. O salto
 // desempilha a diferença. Fora de expressões-comando depth é 0 nos
 // comandos, e nada muda.
-static void find_label_scopes(Node *node, Node *scope);
+//
+// O mesmo percurso preenche label_vla, que diz de quais blocos com VLA um
+// salto sai: os VLAs deles são liberados antes do salto
+// (release_vla_to_label).
+static void find_label_scopes(Node *node, Node *scope, Node *vla);
 
-static void find_label_scopes_list(Node *node, Node *scope) {
+static void find_label_scopes_list(Node *node, Node *scope, Node *vla) {
   for (; node; node = node->next)
-    find_label_scopes(node, scope);
+    find_label_scopes(node, scope, vla);
 }
 
-static void find_label_scopes(Node *node, Node *scope) {
+static void put_label_scope(char *label, Node *scope, Node *vla) {
+  if (!label)
+    return;
+  hashmap_put(&label_scope, label, scope);
+  hashmap_put(&label_vla, label, vla);
+}
+
+static void find_label_scopes(Node *node, Node *scope, Node *vla) {
   if (!node)
     return;
 
   switch (node->kind) {
   case ND_LABEL:
-    hashmap_put(&label_scope, node->unique_label, scope);
+    put_label_scope(node->unique_label, scope, vla);
     break;
   case ND_FOR:
   case ND_DO:
   case ND_SWITCH:
-    if (node->brk_label)
-      hashmap_put(&label_scope, node->brk_label, scope);
-    if (node->cont_label)
-      hashmap_put(&label_scope, node->cont_label, scope);
+    put_label_scope(node->brk_label, scope, vla);
+    put_label_scope(node->cont_label, scope, vla);
     break;
   case ND_STMT_EXPR:
-    find_label_scopes_list(node->body, node);
+    find_label_scopes_list(node->body, node, vla);
     return;
+  case ND_BLOCK:
+    if (node->vla_save) {
+      find_label_scopes_list(node->body, scope, node);
+      return;
+    }
+    break;
   }
 
-  find_label_scopes(node->lhs, scope);
-  find_label_scopes(node->rhs, scope);
-  find_label_scopes(node->cond, scope);
-  find_label_scopes(node->then, scope);
-  find_label_scopes(node->els, scope);
-  find_label_scopes(node->init, scope);
-  find_label_scopes(node->inc, scope);
-  find_label_scopes_list(node->body, scope);
-  find_label_scopes_list(node->args, scope);
+  find_label_scopes(node->lhs, scope, vla);
+  find_label_scopes(node->rhs, scope, vla);
+  find_label_scopes(node->cond, scope, vla);
+  find_label_scopes(node->then, scope, vla);
+  find_label_scopes(node->els, scope, vla);
+  find_label_scopes(node->init, scope, vla);
+  find_label_scopes(node->inc, scope, vla);
+  find_label_scopes_list(node->body, scope, vla);
+  find_label_scopes_list(node->args, scope, vla);
 }
 
 // Desempilha os temporários acima do nível do label antes de saltar.
-static void unwind_to_label(char *label) {
+// Devolve o `depth` com que se chega ao label.
+static int unwind_to_label(char *label) {
   if (depth == 0)
-    return;
+    return 0;
 
   Node *scope = hashmap_get(&label_scope, label);
   if (!scope)
-    return;
+    return depth;
 
   int target = -1;
   if (scope == &top_scope)
@@ -983,8 +1006,51 @@ static void unwind_to_label(char *label) {
   // Alvo dentro de uma expressão-comando que não está ativa: salto para
   // dentro dela, que o C não permite. Nada a ajustar.
   if (target < 0 || target >= depth)
-    return;
+    return depth;
   add_imm("sp", "sp", (depth - target) * 4);
+  return target;
+}
+
+// kscc: libera os VLAs de um bloco: alloca_bottom e sp voltam ao valor
+// guardado na entrada (Node::vla_save). Os `ntemps` temporários que
+// continuam vivos (os do nível do comando) ficam entre sp e alloca_bottom
+// e sobem junto; o destino está acima da origem, então a cópia vai de
+// cima para baixo. Destrói r3 e r4.
+static void vla_restore(Obj *save, int ntemps) {
+  load_fp_slot("r3", save->offset);
+  store_fp_slot("r3", current_fn->alloca_bottom->offset, "r4");
+  if (ntemps > 0) {
+    add_imm("r3", "r3", -ntemps * 4);
+    for (int i = ntemps - 1; i >= 0; i--) {
+      println("  ldw r4, [sp + %d]", i * 4);
+      println("  stw [r3 + %d], r4", i * 4);
+    }
+  }
+  println("  mov sp, r3");
+}
+
+// kscc: antes de um salto, libera os VLAs dos blocos de que ele sai: basta
+// restaurar o mais externo deles. `ntemps` é o depth no label.
+static void release_vla_to_label(char *label, int ntemps) {
+  if (vla_len == 0)
+    return;
+
+  Node *target = hashmap_get(&label_vla, label);
+  if (!target)
+    return;
+
+  int i = 0;
+  if (target != &top_scope) {
+    for (i = vla_len - 1; i >= 0 && vla_blocks[i] != target; i--)
+      ;
+    // Alvo num bloco com VLA que não está ativo: salto para dentro do
+    // escopo de um VLA, que o C não permite.
+    if (i < 0)
+      return;
+    i++;
+  }
+  if (i < vla_len)
+    vla_restore(vla_blocks[i]->vla_save, ntemps);
 }
 
 static void gen_stmt(Node *node) {
@@ -1066,13 +1132,31 @@ static void gen_stmt(Node *node) {
     gen_stmt(node->lhs);
     return;
   case ND_BLOCK:
+    // kscc: bloco que declara VLA: guarda alloca_bottom na entrada e o
+    // restaura na saída (e nos saltos para fora, release_vla_to_label),
+    // liberando o VLA no fim do seu escopo (C11 6.2.4p7).
+    if (node->vla_save) {
+      load_fp_slot("r1", current_fn->alloca_bottom->offset);
+      store_fp_slot("r1", node->vla_save->offset, "r2");
+      if (vla_len == vla_cap) {
+        vla_cap = vla_cap ? vla_cap * 2 : 8;
+        vla_blocks = realloc(vla_blocks, sizeof(Node *) * vla_cap);
+      }
+      vla_blocks[vla_len++] = node;
+    }
     for (Node *n = node->body; n; n = n->next)
       gen_stmt(n);
+    if (node->vla_save) {
+      vla_len--;
+      vla_restore(node->vla_save, depth);
+    }
     return;
-  case ND_GOTO:
-    unwind_to_label(node->unique_label);
+  case ND_GOTO: {
+    int ntemps = unwind_to_label(node->unique_label);
+    release_vla_to_label(node->unique_label, ntemps);
     println("  jmp %s", node->unique_label);
     return;
+  }
   case ND_GOTO_EXPR:
     gen_expr(node->lhs);
     println("  jmpr r1");
@@ -1360,7 +1444,8 @@ static void emit_text(Obj *prog) {
 
     // Emit code
     label_scope = (HashMap){0};
-    find_label_scopes(fn->body, &top_scope);
+    label_vla = (HashMap){0};
+    find_label_scopes(fn->body, &top_scope, &top_scope);
     gen_stmt(fn->body);
     assert(depth == 0);
 

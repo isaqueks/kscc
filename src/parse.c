@@ -110,6 +110,9 @@ static Obj *builtin_alloca2; // kscc: __builtin_alloca, sinônimo de alloca
 // kscc: true enquanto o preprocessador avalia um #if (ver pp_const_expr).
 static bool pp_mode;
 
+// kscc: o bloco sendo lido declara um VLA (ver Node::vla_save).
+static bool block_has_vla;
+
 static bool is_typename(Token *tok);
 static Type *declspec(Token **rest, Token *tok, VarAttr *attr);
 static Type *typename(Token **rest, Token *tok);
@@ -949,6 +952,7 @@ static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr) 
       // Variable length arrays (VLAs) are translated to alloca() calls.
       // For example, `int x[n+2]` is translated to `tmp = n + 2,
       // x = alloca(tmp)`.
+      block_has_vla = true;
       Obj *var = new_lvar(get_ident(ty->name), ty);
       Token *tok = ty->name;
       Node *expr = new_binary(ND_ASSIGN, new_vla_ptr(var, tok),
@@ -1894,6 +1898,8 @@ static Node *compound_stmt(Token **rest, Token *tok) {
   Node *node = new_node(ND_BLOCK, tok);
   Node head = {};
   Node *cur = &head;
+  bool outer_has_vla = block_has_vla;
+  block_has_vla = false;
 
   enter_scope();
 
@@ -1925,6 +1931,12 @@ static Node *compound_stmt(Token **rest, Token *tok) {
   }
 
   leave_scope();
+
+  // kscc: o VLA vive até o fim do bloco (C11 6.2.4p7). Sem liberar, um
+  // VLA num laço consumia pilha a cada iteração até FAULT_STACK.
+  if (block_has_vla)
+    node->vla_save = new_lvar("", pointer_to(ty_char));
+  block_has_vla = outer_has_vla;
 
   node->body = head.next;
   *rest = tok->next;

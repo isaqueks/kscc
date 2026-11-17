@@ -71,7 +71,12 @@ test-asan: build/asan/kscc libks-asan check-ksvm2
 	ASAN_OPTIONS=detect_leaks=0 KSAS=$(abspath $(KSAS)) KSVM=$(abspath $(KSVM)) \
 	  test/chibicc/driver.sh build/asan/kscc
 
+# Bateria completa: unit + chibicc + diferencial (gcc -m32) + fuzz + bench + embarcados
+# (simavr/QEMU via ../ksvm2). Variáveis: FUZZ_N (padrão 200), CSMITH_N (padrão 30).
+test-all: build/kscc libks check-ksvm2
+	FUZZ_N=$(or $(FUZZ_N),200) CSMITH_N=$(or $(CSMITH_N),30) tools/run_all_tests.sh
+
 clean:
 	rm -rf build
 
-.PHONY: all libks libks-asan test test-asan clean check-ksvm2
+.PHONY: all libks libks-asan test test-asan test-all clean check-ksvm2

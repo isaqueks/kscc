@@ -8,3 +8,4 @@ kscc
 stage2/
 __pycache__/
 .vscode/
+platform.info

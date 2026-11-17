@@ -689,7 +689,15 @@ static Type *array_dimensions(Token **rest, Token *tok, Type *ty) {
 
   if (ty->kind == TY_VLA || !is_const_expr(expr))
     return vla_of(ty, expr);
-  return array_of(ty, eval(expr));
+
+  // kscc: tamanho negativo era aceito em silêncio, e um array de mais de
+  // INT_MAX bytes estourava o int de Type::size (UB no compilador).
+  int64_t len = eval(expr);
+  if (len < 0)
+    error_tok(expr->tok, "size of array is negative");
+  if (ty->size > 0 && len > INT32_MAX / ty->size)
+    error_tok(expr->tok, "array grande demais");
+  return array_of(ty, len);
 }
 
 // type-suffix = "(" func-params
@@ -2783,9 +2791,11 @@ static void struct_members(Token **rest, Token *tok, Type *ty) {
     bool first = true;
 
     // Anonymous struct member
+    Token *start = tok;
     if ((basety->kind == TY_STRUCT || basety->kind == TY_UNION) &&
         consume(&tok, tok, ";")) {
       Member *mem = calloc(1, sizeof(Member));
+      mem->tok = start; // kscc: Member::tok não era preenchido
       mem->ty = basety;
       mem->idx = idx++;
       mem->align = attr.align ? attr.align : mem->ty->align;
@@ -2800,14 +2810,26 @@ static void struct_members(Token **rest, Token *tok, Type *ty) {
       first = false;
 
       Member *mem = calloc(1, sizeof(Member));
+      mem->tok = tok; // kscc: Member::tok não era preenchido
       mem->ty = declarator(&tok, tok, basety);
       mem->name = mem->ty->name;
       mem->idx = idx++;
       mem->align = attr.align ? attr.align : mem->ty->align;
 
       if (consume(&tok, tok, ":")) {
+        // kscc: largura fora de 0..bits do tipo (`int x : 33`) era aceita
+        // e gerava deslocamentos negativos; o C11 6.7.2.1p4 exige erro.
+        Token *wtok = tok;
+        int64_t w = const_expr(&tok, tok);
+        int max = (mem->ty->kind == TY_BOOL) ? 1 : mem->ty->size * 8;
+        if (!is_integer(mem->ty))
+          error_tok(wtok, "bit-field com tipo nao inteiro");
+        if (w < 0 || w > max)
+          error_tok(wtok, "largura de bit-field invalida");
+        if (w == 0 && mem->name)
+          error_tok(wtok, "bit-field com nome nao pode ter largura zero");
         mem->is_bitfield = true;
-        mem->bit_width = const_expr(&tok, tok);
+        mem->bit_width = w;
       }
 
       cur = cur->next = mem;
@@ -2917,6 +2939,11 @@ static Type *struct_decl(Token **rest, Token *tok) {
   int bits = 0;
 
   for (Member *mem = ty->members; mem; mem = mem->next) {
+    // kscc: `bits` conta bits num int: membros somando mais de 128 MiB
+    // estourariam (UB no compilador).
+    if ((int64_t)bits + (int64_t)mem->ty->size * 8 > INT32_MAX / 2)
+      error_tok(mem->tok, "struct grande demais");
+
     if (mem->is_bitfield && mem->bit_width == 0) {
       // Zero-width anonymous bitfield has a special meaning.
       // It affects only alignment.

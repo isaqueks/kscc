@@ -134,7 +134,7 @@ int main() {
 
   ASSERT(0, strcmp(g20, "foobar"));
   ASSERT(0, strcmp(g21, "bar"));
-  ASSERT(0, strcmp(g22+3, "foobar"));
+  ASSERT(-21, g22-g17); // kscc: &g17 é char (*)[7], então &g17-3 recua 21 bytes (gcc/clang); o chibicc tratava &g17 como char *
 
   ASSERT(0, strcmp(g23[0], "foobar"));
   ASSERT(0, strcmp(g23[1], "bar"));

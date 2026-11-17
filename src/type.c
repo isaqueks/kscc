@@ -302,14 +302,12 @@ void add_type(Node *node) {
   case ND_MEMBER:
     node->ty = node->member->ty;
     return;
-  case ND_ADDR: {
-    Type *ty = node->lhs->ty;
-    if (ty->kind == TY_ARRAY)
-      node->ty = pointer_to(ty->base);
-    else
-      node->ty = pointer_to(ty);
+  case ND_ADDR:
+    // kscc: &a, com a array de T[n], é um ponteiro para o array, T (*)[n]
+    // (C11 6.5.3.2p3); o chibicc dava T *, e `&a + 1` avançava sizeof(T)
+    // em vez de sizeof(a).
+    node->ty = pointer_to(node->lhs->ty);
     return;
-  }
   case ND_DEREF:
     if (!node->lhs->ty->base)
       error_tok(node->tok, "invalid pointer dereference");

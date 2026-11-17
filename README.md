@@ -3,8 +3,10 @@
 Fork do [chibicc](https://github.com/rui314/chibicc) (Rui Ueyama, MIT) com o gerador de
 código retargetado para a máquina virtual [KSVM v2](https://github.com/isaqueks/ksvm2).
 
-Estado: fases 0 e 1 (driver, link por concatenação, inteiros, controle de fluxo e
-chamadas). Plano completo em `docs/README.md`.
+Estado: fases 0 a 3 (driver, link por concatenação, inteiros, controle de fluxo,
+chamadas, ponteiros, structs/unions por valor, globais e `.rodata`, varargs,
+`alloca`/VLA, símbolos comuns). Ainda não: `long long` (fase 5), ponto flutuante
+(fase 6), `libks`/`printf` (fase 4). Plano completo em `docs/README.md`.
 
 Depende da ksvm2 construída (`ksas`, `ksvm`) em `KSVM2_HOME` (padrão `../ksvm2`).
 

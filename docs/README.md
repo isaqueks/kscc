@@ -36,5 +36,5 @@ Nada aqui é código ainda. Estes documentos são a especificação que o fork d
    recebem prefixo único por arquivo.
 6. **Suite de testes do chibicc como oráculo**: os 49 arquivos de `test/` são adaptados para
    ILP32 e executados dentro do `ksvm`. Um teste que passa é uma feature comprovada.
-7. **Nenhum pré-requisito bloqueante na ksvm2**: o `ksas` já aceita os labels do chibicc
-   (`.L.else.3`), seus limites bastam, e `ksvm` já devolve o código de saída do guest (doc 07 §0).
+7. **Nenhum pré-requisito bloqueante na ksvm2**: labels ganham prefixo por unidade (`L<id>.`),
+   os limites do `ksas` bastam, e `ksvm` já devolve o código de saída do guest (doc 07 §0).

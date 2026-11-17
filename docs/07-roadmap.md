@@ -4,7 +4,7 @@
 
 | Item | Por quê | Esforço |
 |------|---------|---------|
-| Labels com `.` no `ksas` | **Já suportado** (`lexer.c`: identificadores aceitam `.` e podem começar com `.`). Os labels `.L.else.3` do chibicc podem ser mantidos como estão | — |
+| Labels com `.` no `ksas` | Identificadores aceitam `.` no meio, mas um nome **começando** com `.` é lido como diretiva. O kscc gera `L<id>.else.N`, com `<id>` = hash FNV-1a do caminho da unidade (também evita colisão de contadores entre unidades no link) | feito (fase 1) |
 | Limites do `ksas` | **Já suficientes**: `KSAS_MAX_SYMBOLS` 65.536, `KSAS_MAX_ITEMS` 1 M, pool de 16 MiB (`ir.h`), ajustáveis por `-D` na compilação do `ksas`. Só revisar se a suite inteira concatenada passar de 65 k símbolos | — |
 | Validar `.kso` sem gerar saída | Não há `--syntax-only`; `ksas x.ksasm -o /dev/null` funciona no Linux. Opcional: adicionar `--syntax-only` para Windows | horas (opcional) |
 | `.stack` e `.entry` podem vir do rodapé do link mesmo que o `.text` tenha vindo antes | Confirmar; o `ksas` já aceita diretivas em qualquer ordem | — |

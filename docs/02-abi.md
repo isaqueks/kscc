@@ -122,7 +122,7 @@ Verificação de estouro: a VM já gera `FAULT_STACK` se `sp` cruzar `stack_limi
 | função ou global `static` | idem | `_S<id>_nome`, onde `<id>` é único por unidade de tradução (hash curto do caminho) |
 | string literal, literal composto global | `.rodata` | `_L<n>_str` |
 | variável local `static` | `.data`/`.bss` | `_L<n>_nome` |
-| label de controle (`.L.else.3` no chibicc) | `.text` | `.L.else.3`, inalterado: o `ksas` aceita `.` em identificadores |
+| label de controle (`.L.else.3` no chibicc) | `.text` | `L<id>.else.3` (`<id>` = hash da unidade; o `ksas` trata nomes iniciados por `.` como diretiva) |
 | `main` | `.text` | `main`, chamado por `_start` do `crt0` |
 
 Globais inicializadas com endereços usam `.word sym + off`, que o `ksas` já resolve.

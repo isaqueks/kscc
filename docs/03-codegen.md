@@ -135,7 +135,7 @@ stb [fp + off + k], zr     ; resto
 ```
 
 ### `ND_COND`, `ND_NOT`, `ND_BITNOT`, `ND_LOGAND`, `ND_LOGOR`
-Estrutura e nomes de labels idênticos (`.L.else.N`, `.L.end.N`, `.L.true.N`, `.L.false.N`): o `ksas` aceita `.` em identificadores.
+Estrutura idêntica; labels `L<id>.else.N`, `L<id>.end.N`, `L<id>.true.N`, `L<id>.false.N` (prefixo por unidade, doc 02 §5).
 
 ### `ND_FUNCALL`
 ```asm
@@ -182,7 +182,7 @@ a expansão muda).
 |----------|------------|
 | Offset de local/membro fora de ±8191 | `gen_addr` emite `addl`; `load`/`store` sempre usam `[r1]` com offset 0, então nunca estouram |
 | `switch` | chibicc emite cadeia de `cmp`/`je` por `case` (e `case` com ranges GNU: dois `cmp`). Manter. Tabela de saltos com `jmpr` é otimização da fase 7 |
-| `goto`, labels do usuário | `unique_label()` do chibicc inalterado (`.L..N`) |
+| `goto`, labels do usuário | `unique_label()` do chibicc com o prefixo `L<id>..N` |
 | `alloca(n)` / VLA | `sub sp, sp, n` com `n` arredondado a 4; ponteiro = `sp`; liberação no epílogo (`mov sp, fp`), igual ao chibicc. O chibicc move os temporários da pilha; replicar a lógica de `builtin_alloca` com `r2`/`r3` |
 | Statement expressions `({ … })` | inalterado |
 | `_Generic`, `typeof`, `offsetof` | resolvidos no parser; sem codegen |

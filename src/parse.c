@@ -3015,9 +3015,47 @@ static Node *struct_ref(Node *node, Token *tok) {
   return node;
 }
 
+// kscc: A++ / A-- com A _Bool (variável ou campo). O valor novo é
+// saturado em 0/1, então (A += 1) - 1 não devolve o antigo: com A == 1,
+// A++ dava 0. Gera `p = &A, old = *p, *p = old + addend, old`, avaliando
+// o lvalue uma vez só (para um membro, p aponta para a struct, como em
+// to_assign, porque um bitfield não tem endereço).
+static Node *new_bool_inc_dec(Node *node, Token *tok, int addend) {
+  bool member = node->kind == ND_MEMBER;
+  Node *target = member ? node->lhs : node;
+  Obj *ptr = new_lvar("", pointer_to(target->ty));
+  Obj *old = new_lvar("", ty_bool);
+
+  Node *ref[2];
+  for (int i = 0; i < 2; i++) {
+    ref[i] = new_unary(ND_DEREF, new_var_node(ptr, tok), tok);
+    if (member) {
+      ref[i] = new_unary(ND_MEMBER, ref[i], tok);
+      ref[i]->member = node->member;
+    }
+  }
+
+  Node *expr = new_binary(ND_ASSIGN, new_var_node(ptr, tok),
+                          new_unary(ND_ADDR, target, tok), tok);
+  expr = new_binary(ND_COMMA, expr,
+                    new_binary(ND_ASSIGN, new_var_node(old, tok), ref[0], tok), tok);
+  expr = new_binary(ND_COMMA, expr,
+                    new_binary(ND_ASSIGN, ref[1],
+                               new_add(new_var_node(old, tok), new_num(addend, tok), tok),
+                               tok),
+                    tok);
+  expr = new_binary(ND_COMMA, expr, new_var_node(old, tok), tok);
+
+  // Bitfield promove a int (ver promote_bitfield em type.c).
+  return new_cast(expr, (member && node->member->is_bitfield) ? ty_int : ty_bool);
+}
+
 // Convert A++ to `(typeof A)((A += 1) - 1)`
 static Node *new_inc_dec(Node *node, Token *tok, int addend) {
   add_type(node);
+  if (node->ty->kind == TY_BOOL)
+    return new_bool_inc_dec(node, tok, addend);
+
   Node *old = new_add(to_assign(new_add(node, new_num(addend, tok), tok)),
                       new_num(-addend, tok), tok);
 

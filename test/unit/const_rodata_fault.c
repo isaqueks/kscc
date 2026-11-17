@@ -1,5 +1,6 @@
 // Global const fica em .rodata (região de código, só leitura): ler
 // funciona; escrever (por um ponteiro sem const) dá FAULT_MEM_PERM.
+// expect-out: ultima escrita
 // expect-exit: 75
 #include "minirt.h"
 const int limit = 10;
@@ -11,6 +12,7 @@ int main() {
   EQ(6, table[0] + table[1] + table[2]);
   mutable_g = 6; // .data continua gravável
   EQ(6, mutable_g);
+  ks_put_str("ultima escrita\n");  // o fault tem de vir da escrita abaixo
   int *p = (int *)&table[1];
   *p = 99;
   return 0;

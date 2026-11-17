@@ -2,6 +2,7 @@
 // struct const. `const char *p` (ponteiro para const) continua gravável,
 // assim como struct com membro const. O teste termina escrevendo em uma
 // struct const, o que dá FAULT_MEM_PERM.
+// expect-out: ultima escrita
 // expect-exit: 75
 #include "minirt.h"
 struct S { int a, b; };
@@ -24,6 +25,7 @@ int main() {
   EQ(7, m.k);
   EQ(-3, sh[0] + sh[1]);
   EQ(7, cs.a + cs.b);
+  ks_put_str("ultima escrita\n");  // o fault tem de vir da escrita abaixo
   struct S *p = (struct S *)&cs;
   p->b = 0;
   return 0;

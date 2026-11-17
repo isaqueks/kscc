@@ -12,7 +12,7 @@ int main() {
   char *p4 = fn(1, alloca(16), 3);
 
   ASSERT(16, p1 - p2);
-  ASSERT(16, p2 - p3);
+  ASSERT(4, p2 - p3); // kscc: alloca arredonda o tamanho a 4 (era 16 no x86-64; doc 03 §2)
   ASSERT(16, p3 - p4);
 
   memcpy(p1, "0123456789abcdef", 16);
@@ -23,6 +23,6 @@ int main() {
   ASSERT(0, memcmp(p2, "ghijklmnopqrstuv", 16));
   ASSERT(0, memcmp(p3, "wxy", 3));
 
-  printf("OK\n");
+  kscc_ok(); // kscc: printf só na fase 4 (libks)
   return 0;
 }

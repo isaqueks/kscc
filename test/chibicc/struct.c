@@ -49,10 +49,10 @@ int main() {
   ASSERT(8, ({ struct t {int a; int b;} x; struct t y; sizeof(y); }));
   ASSERT(8, ({ struct t {int a; int b;}; struct t y; sizeof(y); }));
 
-  ASSERT(16, ({ struct {char a; long b;} x; sizeof(x); }));
+  ASSERT(8, ({ struct {char a; long b;} x; sizeof(x); })); // kscc: long tem 4 bytes (ILP32)
   ASSERT(4, ({ struct {char a; short b;} x; sizeof(x); }));
 
-  ASSERT(8, ({ struct foo *bar; sizeof(bar); }));
+  ASSERT(4, ({ struct foo *bar; sizeof(bar); })); // kscc: ponteiro de 4 bytes (ILP32)
   ASSERT(4, ({ struct T *foo; struct T {int x;}; sizeof(struct T); }));
   ASSERT(1, ({ struct T { struct T *next; int x; } a; struct T b; b.x=1; a.next=&b; a.next->x; }));
   ASSERT(4, ({ typedef struct T T; struct T { int x; }; sizeof(T); }));
@@ -61,6 +61,6 @@ int main() {
   ASSERT(1, ({ struct {int a;} x={1}, y={2}; (1?x:y).a; }));
   ASSERT(2, ({ struct {int a;} x={1}, y={2}; (0?x:y).a; }));
 
-  printf("OK\n");
+  kscc_ok(); // kscc: printf só na fase 4 (libks)
   return 0;
 }

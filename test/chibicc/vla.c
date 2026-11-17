@@ -4,7 +4,7 @@ int main() {
   ASSERT(20, ({ int n=5; int x[n]; sizeof(x); }));
   ASSERT((5+1)*(8*2)*4, ({ int m=5, n=8; int x[m+1][n*2]; sizeof(x); }));
 
-  ASSERT(8, ({ char n=10; int (*x)[n][n+2]; sizeof(x); }));
+  ASSERT(4, ({ char n=10; int (*x)[n][n+2]; sizeof(x); })); // kscc: ponteiro de 4 bytes (ILP32)
   ASSERT(480, ({ char n=10; int (*x)[n][n+2]; sizeof(*x); }));
   ASSERT(48, ({ char n=10; int (*x)[n][n+2]; sizeof(**x); }));
   ASSERT(4, ({ char n=10; int (*x)[n][n+2]; sizeof(***x); }));
@@ -21,6 +21,6 @@ int main() {
 
   ASSERT(10, ({ int n=5; sizeof(char[2][n]); }));
 
-  printf("OK\n");
+  kscc_ok(); // kscc: printf só na fase 4 (libks)
   return 0;
 }

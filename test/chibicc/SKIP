@@ -1,27 +1,9 @@
-# Arquivos da suite do chibicc ainda não suportados pelo kscc.
+# Arquivos da suite do chibicc não suportados pelo kscc.
 # Formato: arquivo  fase-prevista  motivo
 # O harness (test/run.sh) pula os arquivos listados e mostra a contagem.
-alignof.c      fase-2  _Alignas > 4 em locais, alinhamento de structs
-alloca.c       fase-3  alloca (manipula sp com temporários empilhados)
+# Trechos de arquivos ativos que dependem de long long, ponto flutuante ou
+# printf/sprintf ficam atrás de KSCC_HAS_LL / KSCC_HAS_FLOAT / KSCC_PHASE4.
 asm.c          fase-7  asm inline (erro explícito na v1)
 atomic.c       fora    _Atomic não suportado na v1
-attribute.c    fase-3  __attribute__ (subconjunto), structs
-bitfield.c     fase-2  bitfields em structs globais/inicializadores, long long
-builtin.c      fase-3  __builtin_* (subconjunto), ponto flutuante
-commonsym.c    fase-2  símbolos comuns (o ksas não tem .comm)
-complit.c      fase-2  literais compostos de struct
-extern.c       fase-2  extern de arrays/structs entre unidades
 float.c        fase-6  ponto flutuante
-initializer.c  fase-2  inicializadores de struct/union, long long, float
-literal.c      fase-2  literais de long long, float, strings largas
-offsetof.c     fase-2  offsetof com structs
-pointer.c      fase-2  valores esperados para ponteiros de 4 bytes
-sizeof.c       fase-2  sizeof de structs, long long, float
-string.c       fase-2  strings largas (L"", u"", U"") e sprintf
-struct.c       fase-2  struct/union por valor
-stdhdr.c       fase-4  headers da libks
 tls.c          fora    _Thread_local não suportado na v1
-union.c        fase-2  union por valor
-unicode.c      fase-3  strings UTF-16/32 (.half/.word), sprintf
-varargs.c      fase-3  vsprintf/sprintf da libks, va_list ILP32
-vla.c          fase-3  VLA (alloca)

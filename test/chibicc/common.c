@@ -2,8 +2,7 @@
 // glibc). Até a libks (fase 4), assert() imprime com ks_sys_puts e converte
 // inteiros para decimal em C puro; printf fica de fora (os testes chamam
 // kscc_ok() no lugar de printf("OK\n")). As funções auxiliares que dependem
-// de struct por valor, varargs ou ponto flutuante ficam atrás de
-// KSCC_PHASE2 / KSCC_PHASE3 / KSCC_HAS_FLOAT.
+// de ponto flutuante ficam atrás de KSCC_HAS_FLOAT.
 
 int ks_sys_puts(const char *p, int len);
 void ks_sys_exit(int code);
@@ -152,7 +151,6 @@ double add10_double(double x1, double x2, double x3, double x4, double x5, doubl
 }
 #endif
 
-#ifdef KSCC_PHASE2
 typedef struct { int a,b; short c; char d; } Ty4;
 typedef struct { unsigned char a[3]; } Ty6;
 typedef struct { long a, b, c; } Ty7;
@@ -196,9 +194,8 @@ Ty20 struct_test27(void) {
 Ty21 struct_test28(void) {
   return (Ty21){1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20};
 }
-#endif
 
-#if defined(KSCC_PHASE2) && defined(KSCC_HAS_FLOAT)
+#ifdef KSCC_HAS_FLOAT
 typedef struct { int a; float b; double c; } Ty5;
 
 int struct_test5(Ty5 x, int n) {

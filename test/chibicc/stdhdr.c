@@ -7,6 +7,6 @@
 #include <stdnoreturn.h>
 
 int main() {
-  printf("OK\n");
+  kscc_ok(); // kscc: printf só na fase 4 (libks)
   return 0;
 }

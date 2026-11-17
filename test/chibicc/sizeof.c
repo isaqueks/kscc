@@ -6,33 +6,33 @@ int main() {
   ASSERT(2, sizeof(short int));
   ASSERT(2, sizeof(int short));
   ASSERT(4, sizeof(int));
-  ASSERT(8, sizeof(long));
-  ASSERT(8, sizeof(long int));
-  ASSERT(8, sizeof(long int));
-  ASSERT(8, sizeof(char *));
-  ASSERT(8, sizeof(int *));
-  ASSERT(8, sizeof(long *));
-  ASSERT(8, sizeof(int **));
-  ASSERT(8, sizeof(int(*)[4]));
-  ASSERT(32, sizeof(int*[4]));
+  ASSERT(4, sizeof(long)); // kscc: ILP32: long e ponteiros têm 4 bytes
+  ASSERT(4, sizeof(long int)); // kscc: ILP32: long e ponteiros têm 4 bytes
+  ASSERT(4, sizeof(long int)); // kscc: ILP32: long e ponteiros têm 4 bytes
+  ASSERT(4, sizeof(char *)); // kscc: ILP32: long e ponteiros têm 4 bytes
+  ASSERT(4, sizeof(int *)); // kscc: ILP32: long e ponteiros têm 4 bytes
+  ASSERT(4, sizeof(long *)); // kscc: ILP32: long e ponteiros têm 4 bytes
+  ASSERT(4, sizeof(int **)); // kscc: ILP32: long e ponteiros têm 4 bytes
+  ASSERT(4, sizeof(int(*)[4])); // kscc: ILP32: long e ponteiros têm 4 bytes
+  ASSERT(16, sizeof(int*[4])); // kscc: ILP32: long e ponteiros têm 4 bytes
   ASSERT(16, sizeof(int[4]));
   ASSERT(48, sizeof(int[3][4]));
   ASSERT(8, sizeof(struct {int a; int b;}));
 
-  ASSERT(8, sizeof(-10 + (long)5));
-  ASSERT(8, sizeof(-10 - (long)5));
-  ASSERT(8, sizeof(-10 * (long)5));
-  ASSERT(8, sizeof(-10 / (long)5));
-  ASSERT(8, sizeof((long)-10 + 5));
-  ASSERT(8, sizeof((long)-10 - 5));
-  ASSERT(8, sizeof((long)-10 * 5));
-  ASSERT(8, sizeof((long)-10 / 5));
+  ASSERT(4, sizeof(-10 + (long)5)); // kscc: ILP32: long e ponteiros têm 4 bytes
+  ASSERT(4, sizeof(-10 - (long)5)); // kscc: ILP32: long e ponteiros têm 4 bytes
+  ASSERT(4, sizeof(-10 * (long)5)); // kscc: ILP32: long e ponteiros têm 4 bytes
+  ASSERT(4, sizeof(-10 / (long)5)); // kscc: ILP32: long e ponteiros têm 4 bytes
+  ASSERT(4, sizeof((long)-10 + 5)); // kscc: ILP32: long e ponteiros têm 4 bytes
+  ASSERT(4, sizeof((long)-10 - 5)); // kscc: ILP32: long e ponteiros têm 4 bytes
+  ASSERT(4, sizeof((long)-10 * 5)); // kscc: ILP32: long e ponteiros têm 4 bytes
+  ASSERT(4, sizeof((long)-10 / 5)); // kscc: ILP32: long e ponteiros têm 4 bytes
 
   ASSERT(1, ({ char i; sizeof(++i); }));
   ASSERT(1, ({ char i; sizeof(i++); }));
 
-  ASSERT(8, sizeof(int(*)[10]));
-  ASSERT(8, sizeof(int(*)[][10]));
+  ASSERT(4, sizeof(int(*)[10])); // kscc: ILP32: long e ponteiros têm 4 bytes
+  ASSERT(4, sizeof(int(*)[][10])); // kscc: ILP32: long e ponteiros têm 4 bytes
 
   ASSERT(4, sizeof(struct { int x, y[]; }));
 
@@ -58,32 +58,35 @@ int main() {
   ASSERT(4, sizeof(unsigned));
   ASSERT(4, sizeof(unsigned unsigned));
 
-  ASSERT(8, sizeof(long));
-  ASSERT(8, sizeof(signed long));
-  ASSERT(8, sizeof(signed long int));
-  ASSERT(8, sizeof(unsigned long));
-  ASSERT(8, sizeof(unsigned long int));
+  ASSERT(4, sizeof(long)); // kscc: ILP32: long e ponteiros têm 4 bytes
+  ASSERT(4, sizeof(signed long)); // kscc: ILP32: long e ponteiros têm 4 bytes
+  ASSERT(4, sizeof(signed long int)); // kscc: ILP32: long e ponteiros têm 4 bytes
+  ASSERT(4, sizeof(unsigned long)); // kscc: ILP32: long e ponteiros têm 4 bytes
+  ASSERT(4, sizeof(unsigned long int)); // kscc: ILP32: long e ponteiros têm 4 bytes
 
+#ifdef KSCC_HAS_LL // kscc: long long só na fase 5
   ASSERT(8, sizeof(long long));
   ASSERT(8, sizeof(signed long long));
   ASSERT(8, sizeof(signed long long int));
   ASSERT(8, sizeof(unsigned long long));
   ASSERT(8, sizeof(unsigned long long int));
+#endif
 
   ASSERT(1, sizeof((char)1));
   ASSERT(2, sizeof((short)1));
   ASSERT(4, sizeof((int)1));
-  ASSERT(8, sizeof((long)1));
+  ASSERT(4, sizeof((long)1)); // kscc: ILP32: long e ponteiros têm 4 bytes
 
   ASSERT(4, sizeof((char)1 + (char)1));
   ASSERT(4, sizeof((short)1 + (short)1));
   ASSERT(4, sizeof(1?2:3));
   ASSERT(4, sizeof(1?(short)2:(char)3));
-  ASSERT(8, sizeof(1?(long)2:(char)3));
+  ASSERT(4, sizeof(1?(long)2:(char)3)); // kscc: ILP32: long e ponteiros têm 4 bytes
 
   ASSERT(1, sizeof(char) << 31 >> 31);
   ASSERT(1, sizeof(char) << 63 >> 63);
 
+#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
   ASSERT(4, sizeof(float));
   ASSERT(8, sizeof(double));
 
@@ -97,9 +100,10 @@ int main() {
   ASSERT(8, sizeof(1.0/2));
 
   ASSERT(16, sizeof(long double));
+#endif
 
   ASSERT(1, sizeof(main));
 
-  printf("OK\n");
+  kscc_ok(); // kscc: printf só na fase 4 (libks)
   return 0;
 }

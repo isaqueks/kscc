@@ -34,6 +34,6 @@ int main() {
 
   ASSERT(16, ({ struct __attribute__((aligned(8+8))) { char a; int b; } x; _Alignof(x); }));
 
-  printf("OK\n");
+  kscc_ok(); // kscc: printf só na fase 4 (libks)
   return 0;
 }

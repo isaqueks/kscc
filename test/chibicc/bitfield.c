@@ -8,7 +8,7 @@ struct {
 
 int main() {
   ASSERT(4, sizeof(struct {int x:1; }));
-  ASSERT(8, sizeof(struct {long x:1; }));
+  ASSERT(4, sizeof(struct {long x:1; })); // kscc: long tem 4 bytes (ILP32)
 
   struct bit1 {
     short a;
@@ -52,6 +52,6 @@ int main() {
   ASSERT(8, sizeof(struct {int a:3; int:0; int c:5;}));
   ASSERT(4, sizeof(struct {int a:3; int:0;}));
 
-  printf("OK\n");
+  kscc_ok(); // kscc: printf só na fase 4 (libks)
   return 0;
 }

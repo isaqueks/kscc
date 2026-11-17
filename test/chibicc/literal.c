@@ -18,27 +18,46 @@ int main() {
   ASSERT(47, 0B101111);
 
   ASSERT(4, sizeof(0));
-  ASSERT(8, sizeof(0L));
-  ASSERT(8, sizeof(0LU));
-  ASSERT(8, sizeof(0UL));
+  ASSERT(4, sizeof(0L)); // kscc: long tem 4 bytes (ILP32)
+  ASSERT(4, sizeof(0LU)); // kscc: long tem 4 bytes (ILP32)
+  ASSERT(4, sizeof(0UL)); // kscc: long tem 4 bytes (ILP32)
+#ifdef KSCC_HAS_LL // kscc: long long e constantes de 64 bits só na fase 5
   ASSERT(8, sizeof(0LL));
+#endif
+#ifdef KSCC_HAS_LL // kscc: long long e constantes de 64 bits só na fase 5
   ASSERT(8, sizeof(0LLU));
+#endif
+#ifdef KSCC_HAS_LL // kscc: long long e constantes de 64 bits só na fase 5
   ASSERT(8, sizeof(0Ull));
-  ASSERT(8, sizeof(0l));
+#endif
+  ASSERT(4, sizeof(0l)); // kscc: long tem 4 bytes (ILP32)
+#ifdef KSCC_HAS_LL // kscc: long long e constantes de 64 bits só na fase 5
   ASSERT(8, sizeof(0ll));
-  ASSERT(8, sizeof(0x0L));
-  ASSERT(8, sizeof(0b0L));
+#endif
+  ASSERT(4, sizeof(0x0L)); // kscc: long tem 4 bytes (ILP32)
+  ASSERT(4, sizeof(0b0L)); // kscc: long tem 4 bytes (ILP32)
   ASSERT(4, sizeof(2147483647));
+#ifdef KSCC_HAS_LL // kscc: long long e constantes de 64 bits só na fase 5
   ASSERT(8, sizeof(2147483648));
+#endif
+#ifdef KSCC_HAS_LL // kscc: long long e constantes de 64 bits só na fase 5
   ASSERT(-1, 0xffffffffffffffff);
+#endif
+#ifdef KSCC_HAS_LL // kscc: long long e constantes de 64 bits só na fase 5
   ASSERT(8, sizeof(0xffffffffffffffff));
+#endif
   ASSERT(4, sizeof(4294967295U));
+#ifdef KSCC_HAS_LL // kscc: long long e constantes de 64 bits só na fase 5
   ASSERT(8, sizeof(4294967296U));
+#endif
 
   ASSERT(3, -1U>>30);
-  ASSERT(3, -1Ul>>62);
+  ASSERT(3, -1Ul>>30); // kscc: unsigned long tem 32 bits
+#ifdef KSCC_HAS_LL // kscc: long long e constantes de 64 bits só na fase 5
   ASSERT(3, -1ull>>62);
+#endif
 
+#ifdef KSCC_HAS_LL // kscc: long long e constantes de 64 bits só na fase 5
   ASSERT(1, 0xffffffffffffffffl>>63);
   ASSERT(1, 0xffffffffffffffffll>>63);
 
@@ -57,19 +76,28 @@ int main() {
   ASSERT(-1, 0b1111111111111111111111111111111111111111111111111111111111111111);
   ASSERT(8, sizeof(0b1111111111111111111111111111111111111111111111111111111111111111));
   ASSERT(1, 0b1111111111111111111111111111111111111111111111111111111111111111>>63);
+#endif
 
+#ifdef KSCC_HAS_LL // kscc: long long e constantes de 64 bits só na fase 5
   ASSERT(8, sizeof(2147483648));
+#endif
   ASSERT(4, sizeof(2147483647));
 
+#ifdef KSCC_HAS_LL // kscc: long long e constantes de 64 bits só na fase 5
   ASSERT(8, sizeof(0x1ffffffff));
+#endif
   ASSERT(4, sizeof(0xffffffff));
   ASSERT(1, 0xffffffff>>31);
 
+#ifdef KSCC_HAS_LL // kscc: long long e constantes de 64 bits só na fase 5
   ASSERT(8, sizeof(040000000000));
+#endif
   ASSERT(4, sizeof(037777777777));
   ASSERT(1, 037777777777>>31);
 
+#ifdef KSCC_HAS_LL // kscc: long long e constantes de 64 bits só na fase 5
   ASSERT(8, sizeof(0b111111111111111111111111111111111));
+#endif
   ASSERT(4, sizeof(0b11111111111111111111111111111111));
   ASSERT(1, 0b11111111111111111111111111111111>>31);
 
@@ -78,6 +106,7 @@ int main() {
   ASSERT(-1, 0x1 << 31 >> 31);
   ASSERT(-1, 0b1 << 31 >> 31);
 
+#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
   0.0;
   1.0;
   3e+8;
@@ -90,6 +119,7 @@ int main() {
   ASSERT(8, sizeof(.0));
   ASSERT(16, sizeof(5.l));
   ASSERT(16, sizeof(2.0L));
+#endif
 
   assert(1, size\
 of(char), \
@@ -98,6 +128,6 @@ of(char), \
   ASSERT(4, sizeof(L'\0'));
   ASSERT(97, L'a');
 
-  printf("OK\n");
+  kscc_ok(); // kscc: printf só na fase 4 (libks)
   return 0;
 }

@@ -14,6 +14,6 @@ int main() {
   ASSERT(0, common_ext1);
   ASSERT(3, common_ext2);
 
-  printf("OK\n");
+  kscc_ok(); // kscc: printf só na fase 4 (libks)
   return 0;
 }

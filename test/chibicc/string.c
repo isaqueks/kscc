@@ -67,6 +67,6 @@ int main() {
   ASSERT(L'c', ("a" "b" L"c")[2]);
   ASSERT(0, ("a" "b" L"c")[3]);
 
-  printf("OK\n");
+  kscc_ok(); // kscc: printf só na fase 4 (libks)
   return 0;
 }

@@ -28,6 +28,6 @@ int main() {
   ASSERT(3, tree->lhs->lhs->val);
   ASSERT(4, tree->lhs->rhs->val);
 
-  printf("OK\n");
+  kscc_ok(); // kscc: printf só na fase 4 (libks)
   return 0;
 }

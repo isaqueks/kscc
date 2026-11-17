@@ -2,9 +2,13 @@
 
 int main() {
   ASSERT(1, __builtin_types_compatible_p(int, int));
+#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
   ASSERT(1, __builtin_types_compatible_p(double, double));
+#endif
   ASSERT(0, __builtin_types_compatible_p(int, long));
+#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
   ASSERT(0, __builtin_types_compatible_p(long, float));
+#endif
   ASSERT(1, __builtin_types_compatible_p(int *, int *));
   ASSERT(0, __builtin_types_compatible_p(short *, int *));
   ASSERT(0, __builtin_types_compatible_p(int **, int *));
@@ -15,6 +19,7 @@ int main() {
 
   ASSERT(1, __builtin_types_compatible_p(int (*)(void), int (*)(void)));
   ASSERT(1, __builtin_types_compatible_p(void (*)(int), void (*)(int)));
+#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
   ASSERT(1, __builtin_types_compatible_p(void (*)(int, double), void (*)(int, double)));
   ASSERT(1, __builtin_types_compatible_p(int (*)(float, double), int (*)(float, double)));
   ASSERT(0, __builtin_types_compatible_p(int (*)(float, double), int));
@@ -22,12 +27,21 @@ int main() {
   ASSERT(0, __builtin_types_compatible_p(int (*)(float, double), int (*)(float, double, int)));
   ASSERT(1, __builtin_types_compatible_p(double (*)(...), double (*)(...)));
   ASSERT(0, __builtin_types_compatible_p(double (*)(...), double (*)(void)));
+#endif
+  // kscc: os mesmos casos de ponteiro para função, sem ponto flutuante
+  ASSERT(1, __builtin_types_compatible_p(void (*)(int, long), void (*)(int, long)));
+  ASSERT(1, __builtin_types_compatible_p(int (*)(short, long), int (*)(short, long)));
+  ASSERT(0, __builtin_types_compatible_p(int (*)(short, long), int));
+  ASSERT(0, __builtin_types_compatible_p(int (*)(short, long), int (*)(short)));
+  ASSERT(0, __builtin_types_compatible_p(int (*)(short, long), int (*)(short, long, int)));
+  ASSERT(1, __builtin_types_compatible_p(long (*)(...), long (*)(...)));
+  ASSERT(0, __builtin_types_compatible_p(long (*)(...), long (*)(void)));
 
   ASSERT(1, ({ typedef struct {int a;} T; __builtin_types_compatible_p(T, T); }));
   ASSERT(1, ({ typedef struct {int a;} T; __builtin_types_compatible_p(T, const T); }));
 
   ASSERT(1, ({ struct {int a; int b;} x; __builtin_types_compatible_p(typeof(x.a), typeof(x.b)); }));
 
-  printf("OK\n");
+  kscc_ok(); // kscc: printf só na fase 4 (libks)
   return 0;
 }

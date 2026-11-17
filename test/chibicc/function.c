@@ -78,23 +78,17 @@ short sshort_fn();
 
 int add_all(int n, ...);
 
-#ifdef KSCC_PHASE3 // kscc: va_list do x86-64 (__va_area__); a versão KSVM vem com varargs.c
-typedef struct {
-  int gp_offset;
-  int fp_offset;
-  void *overflow_arg_area;
-  void *reg_save_area;
-} __va_elem;
-
-typedef __va_elem va_list[1];
+#ifdef KSCC_PHASE4 // kscc: vsprintf só com a libks (fase 4)
+// kscc: va_list da KSVM (char*, doc 02 §3.2) no lugar do __va_elem e do
+// __va_area__ do x86-64.
+typedef char *va_list;
 
 int add_all(int n, ...);
 int sprintf(char *buf, char *fmt, ...);
 int vsprintf(char *buf, char *fmt, va_list ap);
 
 char *fmt(char *buf, char *fmt, ...) {
-  va_list ap;
-  *ap = *(__va_elem *)__va_area__;
+  va_list ap = (char *)&fmt + sizeof(fmt); // kscc: va_start da KSVM
   vsprintf(buf, fmt, ap);
 }
 #endif
@@ -163,7 +157,6 @@ int struct_test4(Ty4 x, int n);
 int struct_test6(Ty6 x, int n);
 int struct_test7(Ty7 x, int n);
 
-#ifdef KSCC_PHASE2 // kscc: struct/union por valor só na fase 2
 int struct_test14(Ty4 x, int n) {
   switch (n) {
   case 0: return x.a;
@@ -172,9 +165,7 @@ int struct_test14(Ty4 x, int n) {
   default: return x.d;
   }
 }
-#endif
 
-#ifdef KSCC_PHASE2 // kscc: struct/union por valor só na fase 2
 #ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
 int struct_test15(Ty5 x, int n) {
   switch (n) {
@@ -183,7 +174,6 @@ int struct_test15(Ty5 x, int n) {
   default: return x.c;
   }
 }
-#endif
 #endif
 
 typedef struct { unsigned char a[10]; } Ty20;
@@ -197,7 +187,6 @@ Ty6 struct_test26(void);
 Ty20 struct_test27(void);
 Ty21 struct_test28(void);
 
-#ifdef KSCC_PHASE2 // kscc: struct/union por valor só na fase 2
 Ty4 struct_test34(void) {
   return (Ty4){10, 20, 30, 40};
 }
@@ -219,7 +208,6 @@ Ty20 struct_test37(void) {
 Ty21 struct_test38(void) {
   return (Ty21){1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20};
 }
-#endif
 
 inline int inline_fn(void) {
   return 3;
@@ -337,7 +325,6 @@ int main() {
   ASSERT(8, many_args3(1,2,3,4,5,6,7,8,9,10,11,12,13,14,80,10));
 #endif
 
-#ifdef KSCC_PHASE2 // kscc: struct/union por valor só na fase 2
   ASSERT(10, ({ Ty4 x={10,20,30,40}; struct_test4(x, 0); }));
   ASSERT(20, ({ Ty4 x={10,20,30,40}; struct_test4(x, 1); }));
   ASSERT(30, ({ Ty4 x={10,20,30,40}; struct_test4(x, 2); }));
@@ -417,7 +404,6 @@ int main() {
   ASSERT(10, struct_test38().a[9]);
   ASSERT(15, struct_test38().a[14]);
   ASSERT(20, struct_test38().a[19]);
-#endif
 
   ASSERT(5, (***add2)(2,3));
 

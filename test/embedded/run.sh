@@ -1,6 +1,7 @@
 #!/bin/bash
 # test/embedded/run.sh — programas C embarcados (doc 06 §1, camada
-# "Embarcado"): hello, blink e selftest compilados pelo kscc e rodados como
+# "Embarcado"): hello, blink, selftest e fselftest (ponto flutuante)
+# compilados pelo kscc e rodados como
 # firmware no ATmega328P (simavr) e no Cortex-M3 do mps2-an385 (QEMU), via
 # os alvos avr-custom/arm-custom da ksvm2; a saída da UART é conferida com
 # ports/common/expect_run.sh da ksvm2.
@@ -8,8 +9,15 @@
 #   test/embedded/run.sh
 #
 # Antes dos simuladores, cada programa roda no ksvm do desktop com
-# --ram 1024 (a RAM do guest no AVR), e o selftest também é comparado com o
-# gcc -m32. Plataforma sem toolchain/simulador é pulada com aviso.
+# --ram 1024 (a RAM do guest no AVR), e o selftest e o fselftest também são
+# comparados com o gcc -m32. Plataforma sem toolchain/simulador é pulada com
+# aviso.
+#
+# Ponto flutuante: a extensão F da VM existe no desktop e no Cortex-M, mas
+# não na porta AVR (CAPS(0x4000) bit 2 desligado; doc 04 §5.7 da ksvm2).
+# Lá o fselftest tem de detectar a falta e sair limpo com "sem extensao F",
+# e os três programas sem float continuam iguais: float em AVR não é
+# suportado.
 #
 # Os wrappers de GPIO/tempo (ks_sys_pin_*, ks_sys_sleep_ms, ks_sys_millis,
 # ks_sys_caps) são os da libks (libks/asm/syscall.ksasm), ligada por padrão.
@@ -33,12 +41,13 @@ mkdir -p "$OUT"
 
 red() { printf '\033[31m%s\033[0m\n' "$*"; }
 
-PROGS="hello blink selftest"
+PROGS="hello blink selftest fselftest"
 expected() {
   case $1 in
   hello) echo "KSVM C on $2" ;;
   blink) echo "blink ok" ;;
   selftest) echo "selftest ok" ;;
+  fselftest) if [ "$2" = AVR ]; then echo "fselftest: sem extensao F"; else echo "fselftest ok"; fi ;;
   esac
 }
 
@@ -76,13 +85,17 @@ for p in $PROGS; do
     echo "  PASS $p ($(head -1 "$OUT/$p-desktop.out"))"
   fi
 done
-if $CC32 -m32 -std=c11 -O1 -Wall -Itest -o "$OUT/selftest.gcc" test/embedded/selftest.c 2> "$OUT/selftest.gcc.cerr" \
-   && [ ! -s "$OUT/selftest.gcc.cerr" ] && "./$OUT/selftest.gcc" > "$OUT/selftest.gcc.out" \
-   && cmp -s "$OUT/selftest.gcc.out" "$OUT/selftest-desktop.out"; then
-  echo "  PASS selftest = gcc -m32"
-else
-  note_fail "selftest: gcc -m32 diverge ou avisa: $(head -3 "$OUT/selftest.gcc.cerr" "$OUT/selftest.gcc.out")"
-fi
+# fselftest: o gcc com binary32 em SSE, como em test/diff/run.sh
+GCC_FLOAT="-msse -mfpmath=sse -fexcess-precision=standard -fsingle-precision-constant"
+for p in selftest fselftest; do
+  if $CC32 -m32 -std=c11 -O1 -Wall -Itest $GCC_FLOAT -o "$OUT/$p.gcc" "test/embedded/$p.c" -lm 2> "$OUT/$p.gcc.cerr" \
+     && [ ! -s "$OUT/$p.gcc.cerr" ] && "./$OUT/$p.gcc" > "$OUT/$p.gcc.out" \
+     && cmp -s "$OUT/$p.gcc.out" "$OUT/$p-desktop.out"; then
+    echo "  PASS $p = gcc -m32"
+  else
+    note_fail "$p: gcc -m32 diverge ou avisa: $(head -3 "$OUT/$p.gcc.cerr" "$OUT/$p.gcc.out")"
+  fi
+done
 
 # --- 2. firmware --------------------------------------------------------------
 # $1 plataforma (AVR/ARM), $2 alvo make, $3 elf gerado, $4 comando de size,

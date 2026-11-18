@@ -377,13 +377,15 @@ static char *resolve_commons(char **texts, int ntexts) {
 //     o codegen sempre termina funções em ret).
 //  5. Referência fraca: um símbolo comum da libks cujo nome começa com
 //     __ks_weak_ (definição provisória numa unidade, inicializada em
-//     outra) resolve para o marcador comum, que vira um .bss zerado, a
-//     menos que uma raiz peça a definição com a linha
+//     outra) resolve para o marcador comum, que vira um .bss zerado. A
+//     definição de verdade só entra se o marcador comum foi usado (alguém
+//     da libks referencia o símbolo) E uma raiz a pede com a linha
 //         ; kscc-need: __ks_weak_nome
 //     que o codegen emite (é comentário para o ksas). Com a definição
 //     incluída, o símbolo comum some (resolve_commons). É assim que o
 //     printf só liga a conversão de ponto flutuante (~18 KB) quando alguma
-//     unidade passa float/double a uma função variádica.
+//     unidade passa float/double a uma função variádica, e um programa que
+//     passa floats a uma variádica própria sem usar printf não a leva.
 //
 // Identificadores são achados por varredura léxica, ignorando comentários
 // e strings; um falso positivo (um registrador com o nome de uma função,
@@ -628,6 +630,7 @@ typedef struct {
   HashMap user_defs;  // labels e símbolos comuns definidos pelas raízes
   HashMap lib_defs;   // nome -> Block da libks
   HashMap lib_weak;   // nome -> marcador comum __ks_weak_* da libks (passo 5)
+  StringArray needs;  // nomes pedidos por "; kscc-need:" nas raízes
   BlockArray work;    // blocos marcados cujas referências faltam seguir
 } GcContext;
 
@@ -651,9 +654,9 @@ static void use_name(void *ctx, char *name, int len) {
     mark_block(gc, b);
 }
 
-// Linhas "; kscc-need: nome" de uma raiz: puxam a definição de verdade de
-// um símbolo fraco (passo 5).
-static void use_needs(GcContext *gc, char *text) {
+// Linhas "; kscc-need: nome" de uma raiz: a definição de verdade de um
+// símbolo fraco é pedida (passo 5; atendida em resolve_needs).
+static void collect_needs(GcContext *gc, char *text) {
   int mlen = strlen(NEED_MARK);
   for (char *p = text; *p;) {
     char *end = strchr(p, '\n');
@@ -665,13 +668,38 @@ static void use_needs(GcContext *gc, char *text) {
       char *e = q;
       while (e < end && is_ident_char((unsigned char)*e))
         e++;
-      Block *b = hashmap_get2(&gc->lib_defs, q, e - q);
-      if (b && !hashmap_get2(&gc->user_defs, q, e - q))
-        mark_block(gc, b);
+      if (e > q && !hashmap_get2(&gc->user_defs, q, e - q))
+        strarray_push(&gc->needs, strndup(q, e - q));
     }
 
     p = *end ? end + 1 : end;
   }
+}
+
+// Segue as referências dos blocos marcados até o fecho.
+static void gc_close(GcContext *gc) {
+  while (gc->work.len > 0) {
+    Block *b = gc->work.data[--gc->work.len];
+    scan_refs(b->text, use_name, gc);
+    if (falls_through(b) && b->next)
+      mark_block(gc, b->next);
+  }
+}
+
+// Atende os pedidos de definição de símbolos fracos cujo marcador comum
+// entrou (passo 5). Devolve true se marcou algum bloco.
+static bool resolve_needs(GcContext *gc) {
+  bool changed = false;
+  for (int i = 0; i < gc->needs.len; i++) {
+    char *name = gc->needs.data[i];
+    Block *weak = hashmap_get(&gc->lib_weak, name);
+    Block *def = hashmap_get(&gc->lib_defs, name);
+    if (weak && weak->used && def && !def->used) {
+      mark_block(gc, def);
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 static void collect_user_defs(char *text, HashMap *defs) {
@@ -706,16 +734,13 @@ static char *select_used(char *lib, char **roots, int nroots) {
   for (int i = 0; i < nroots; i++)
     collect_user_defs(roots[i], &gc.user_defs);
   for (int i = 0; i < nroots; i++) {
-    use_needs(&gc, roots[i]);
+    collect_needs(&gc, roots[i]);
     scan_refs(roots[i], use_name, &gc);
   }
 
-  while (gc.work.len > 0) {
-    Block *b = gc.work.data[--gc.work.len];
-    scan_refs(b->text, use_name, &gc);
-    if (falls_through(b) && b->next)
-      mark_block(&gc, b->next);
-  }
+  do
+    gc_close(&gc);
+  while (resolve_needs(&gc));
 
   char *buf;
   size_t buflen;

@@ -2334,6 +2334,18 @@ static bool eval_truth(Node *node) {
 // 2 * 24 + 2) torna o arredondamento duplo inócuo, e o resultado é o mesmo
 // bit a bit que FADD/FSUB/FMUL/FDIV, sem depender de FLT_EVAL_METHOD do
 // host. Inteiros viram float com um único arredondamento (de int64).
+// kscc: resultado de FADD/FSUB/FMUL/FDIV: arredondado para binary32 e, se
+// NaN, o NaN canônico 0x7FC00000 que a VM sempre produz (doc 04 §5.7 da
+// ksvm2). O x86 do host dá 0xFFC00000 para 0/0 e propaga payloads.
+static float vm_float(double d) {
+  float f = (float)d;
+  if (f != f) {
+    uint32_t bits = 0x7FC00000;
+    memcpy(&f, &bits, 4);
+  }
+  return f;
+}
+
 static float eval_double(Node *node) {
   add_type(node);
 
@@ -2345,13 +2357,13 @@ static float eval_double(Node *node) {
 
   switch (node->kind) {
   case ND_ADD:
-    return (float)((double)eval_double(node->lhs) + (double)eval_double(node->rhs));
+    return vm_float((double)eval_double(node->lhs) + (double)eval_double(node->rhs));
   case ND_SUB:
-    return (float)((double)eval_double(node->lhs) - (double)eval_double(node->rhs));
+    return vm_float((double)eval_double(node->lhs) - (double)eval_double(node->rhs));
   case ND_MUL:
-    return (float)((double)eval_double(node->lhs) * (double)eval_double(node->rhs));
+    return vm_float((double)eval_double(node->lhs) * (double)eval_double(node->rhs));
   case ND_DIV:
-    return (float)((double)eval_double(node->lhs) / (double)eval_double(node->rhs));
+    return vm_float((double)eval_double(node->lhs) / (double)eval_double(node->rhs));
   case ND_NEG:
     return -eval_double(node->lhs);
   case ND_COND:

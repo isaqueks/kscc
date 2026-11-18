@@ -1546,7 +1546,16 @@ static void write_buf(char *buf, uint64_t val, int sz) {
 static void write_bitfield(char *base, Member *mem, Node *expr) {
   char *loc = base + mem->offset;
   uint64_t oldval = read_buf(loc, mem->ty->size);
-  uint64_t newval = eval(expr);
+  uint64_t newval;
+  add_type(expr);
+  if (is_flonum(expr->ty)) {
+    // kscc: float -> tipo do campo como em write_gvar_data (_Bool: != 0;
+    // unsigned de 32 bits: FTOU), não FTOI para int.
+    float f = eval_double(expr);
+    newval = mem->ty->kind == TY_BOOL ? f != 0 : float_to_int(mem->ty, f);
+  } else {
+    newval = eval(expr);
+  }
   if (mem->ty->kind == TY_BOOL)
     newval = newval != 0;
   uint64_t mask = ((uint64_t)1 << mem->bit_width) - 1;

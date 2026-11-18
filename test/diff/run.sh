@@ -5,7 +5,13 @@
 #
 # Para cada test/diff/*.c e test/diff/regressions/*.c:
 #   1. kscc -Itest → .ksx → ksvm --max-insns 200000000
-#   2. gcc -m32 -std=c11 -O1 -fwrapv -fno-strict-aliasing -Wall → nativo
+#   2. gcc -m32 -std=c11 -O1 -fwrapv -fno-strict-aliasing -Wall → nativo, com
+#      ponto flutuante em binary32 igual ao da KSVM: -msse -mfpmath=sse
+#      (sem precisão estendida do x87), -fexcess-precision=standard e
+#      -fsingle-precision-constant (literais sem sufixo são float, como no
+#      kscc); -lm. Os programas float só usam float (nunca double), e
+#      imprimem NaN como "nan" (test/fltout.h): o x86 produz 0xFFC00000 e a
+#      KSVM o canônico 0x7FC00000.
 #   3. compara stdout e código de saída (diff -u legível em caso de falha)
 # Com DIFF_UBSAN=1 (padrão) o fonte também é compilado com
 # -fsanitize=undefined (sem -fwrapv) e executado: se o UBSan reclamar, o
@@ -27,8 +33,9 @@ DIFF_UBSAN=${DIFF_UBSAN:-1}
 DIFF_DIR=${DIFF_DIR:-test/diff}
 MAX_INSNS=200000000
 OUT=build/test/diff
-GCC_FLAGS="-m32 -std=c11 -O1 -fwrapv -fno-strict-aliasing -Wall -Itest"
-UBSAN_FLAGS="-m32 -std=c11 -O1 -g -fno-strict-aliasing -Itest -fsanitize=undefined -fno-sanitize-recover=all"
+FLOAT_FLAGS="-msse -mfpmath=sse -fexcess-precision=standard -fsingle-precision-constant"
+GCC_FLAGS="-m32 -std=c11 -O1 -fwrapv -fno-strict-aliasing -Wall -Itest $FLOAT_FLAGS"
+UBSAN_FLAGS="-m32 -std=c11 -O1 -g -fno-strict-aliasing -Itest $FLOAT_FLAGS -fsanitize=undefined,float-cast-overflow -fno-sanitize-recover=all"
 
 mkdir -p "$OUT"
 
@@ -56,7 +63,7 @@ run_one() {
   kflags=$(sed -n 's|^// kscc-flags: *||p' "$src" | head -1)
 
   # --- gcc ---
-  if ! $CC32 $GCC_FLAGS -o "$base.gcc" "$src" 2> "$base.gcc.cerr"; then
+  if ! $CC32 $GCC_FLAGS -o "$base.gcc" "$src" -lm 2> "$base.gcc.cerr"; then
     report_fail "$name" "gcc nao compilou:" "$(head -10 "$base.gcc.cerr")"
     return
   fi
@@ -69,7 +76,7 @@ run_one() {
   local grc=$?
 
   if [ "$DIFF_UBSAN" = 1 ]; then
-    if ! $CC32 $UBSAN_FLAGS -o "$base.ubsan" "$src" 2> "$base.ubsan.cerr"; then
+    if ! $CC32 $UBSAN_FLAGS -o "$base.ubsan" "$src" -lm 2> "$base.ubsan.cerr"; then
       report_fail "$name" "gcc+UBSan nao compilou:" "$(head -10 "$base.ubsan.cerr")"
       return
     fi

@@ -284,7 +284,8 @@ typedef struct {
 // + 4 de folga para o *10).
 #define FB_LIMBS 12
 
-// b = b * k + c (k <= 10), nos `n` limbs; devolve o vai-um final.
+// b = b * k + c (k <= 32768, c < 2^16), nos `n` limbs; devolve o vai-um
+// final.
 static unsigned fb_mul(unsigned short *b, int n, unsigned k, unsigned c) {
   for (int i = 0; i < n; i++) {
     unsigned t = b[i] * k + c;
@@ -299,12 +300,18 @@ static void dec_push(Dec *x, int c) {
     x->d[x->n++] = c;
 }
 
-// Dígitos decimais exatos de m * 2^e (m != 0).
-static void float_digits(unsigned m, int e, Dec *x) {
+// Dígitos decimais exatos de m * 2^e (m != 0), parando quando já há
+// `maxfrac` dígitos depois do ponto ou `maxsig` significativos: o que
+// sobra só importa para o arredondamento, e vira um dígito 1 extra se não
+// for zero (o arredondamento olha o dígito seguinte ao último guardado e
+// se há algo não nulo depois dele). A parte inteira sai sempre inteira.
+static void float_digits(unsigned m, int e, Dec *x, int maxfrac, int maxsig) {
   unsigned short b[FB_LIMBS];
-  char ib[40];
+  char ib[44];
   int ni = 0;
 
+  if (maxsig > FD_MAX - 8)
+    maxsig = FD_MAX - 8;
   x->n = 0;
   x->dp = 0;
   for (int i = 0; i < FB_LIMBS; i++)
@@ -312,16 +319,18 @@ static void float_digits(unsigned m, int e, Dec *x) {
 
   // Parte inteira, dígitos do menos significativo para o mais.
   if (e >= 0) {
-    // m << e (e <= 104): até 128 bits, 8 limbs; dobra e vezes.
+    // m << e (e <= 104): até 128 bits, 8 limbs; multiplica por 2^15 de
+    // cada vez.
     int n = 2;
     b[0] = m & 0xFFFF;
     b[1] = m >> 16;
-    for (int i = 0; i < e; i++) {
-      unsigned c = fb_mul(b, n, 2, 0);
+    for (int left = e; left > 0; left -= 15) {
+      int sh = left < 15 ? left : 15;
+      unsigned c = fb_mul(b, n, 1u << sh, 0);
       if (c)
         b[n++] = c;
     }
-    // Divisões sucessivas por 10.
+    // Divisões sucessivas por 10^4: quatro dígitos por passada.
     for (;;) {
       while (n > 0 && b[n - 1] == 0)
         n--;
@@ -330,11 +339,14 @@ static void float_digits(unsigned m, int e, Dec *x) {
       unsigned r = 0;
       for (int i = n - 1; i >= 0; i--) {
         unsigned t = (r << 16) | b[i];
-        b[i] = t / 10;
-        r = t % 10;
+        b[i] = t / 10000;
+        r = t % 10000;
       }
-      ib[ni++] = '0' + r;
+      for (int k = 0; k < 4; k++, r /= 10)
+        ib[ni++] = '0' + r % 10;
     }
+    while (ni > 0 && ib[ni - 1] == '0')
+      ni--;  // zeros à esquerda do último grupo
   } else if (-e < 24) {
     for (unsigned v = m >> -e; v; v /= 10)
       ib[ni++] = '0' + v % 10;
@@ -347,12 +359,13 @@ static void float_digits(unsigned m, int e, Dec *x) {
   if (e >= 0)
     return;
 
-  // Fração: F / 2^k com k = -e, F = m mod 2^k. Cada passo F *= 10; o
-  // dígito são os bits a partir de k. Termina quando F == 0 (no máximo k
-  // passos: a expansão de 2^-k tem k dígitos).
+  // Fração: F / 2^k com k = -e, F = m mod 2^k. Cada passo F *= 10^4; os
+  // bits a partir de k são os quatro próximos dígitos. Termina quando
+  // F == 0 (a expansão de 2^-k tem k dígitos) ou no limite pedido.
   int k = -e;
   unsigned f = (k < 24) ? (m & ((1u << k) - 1)) : m;
   int L = k >> 4, bit = k & 15;
+  int pos = 0;  // dígitos já gerados depois do ponto
   b[0] = f & 0xFFFF;
   b[1] = f >> 16;
   for (;;) {
@@ -361,14 +374,21 @@ static void float_digits(unsigned m, int e, Dec *x) {
       any |= b[i];
     if (!any)
       break;
-    fb_mul(b, L + 2, 10, 0);
-    int dg = (((unsigned)b[L] | ((unsigned)b[L + 1] << 16)) >> bit) & 15;
+    if (pos >= maxfrac || x->n >= maxsig) {
+      dec_push(x, '1');  // resto não nulo (só conta para o arredondamento)
+      return;
+    }
+    fb_mul(b, L + 2, 10000, 0);
+    unsigned g = (((unsigned)b[L] | ((unsigned)b[L + 1] << 16)) >> bit) & 0x3FFF;
     b[L] &= (1u << bit) - 1;
     b[L + 1] = 0;
-    if (x->n == 0 && dg == 0)
-      x->dp--;  // zero à esquerda: só desloca o ponto
-    else
-      dec_push(x, '0' + dg);
+    for (unsigned p10 = 1000; p10; p10 /= 10, pos++) {
+      int dg = g / p10 % 10;
+      if (x->n == 0 && dg == 0)
+        x->dp--;  // zero à esquerda: só desloca o ponto
+      else
+        dec_push(x, '0' + dg);
+    }
   }
 
   while (x->n > 0 && x->d[x->n - 1] == '0')
@@ -595,15 +615,22 @@ static void convert_float(Out *o, Spec *sp, int conv, va_list *ap) {
     return;
   }
 
+  // Dígitos necessários: o arredondamento olha o dígito seguinte ao último
+  // impresso (f: prec + 1 depois do ponto; e: prec + 2 significativos; g: P
+  // + 1, com folga).
+  int prec = sp->prec < 0 ? 6 : sp->prec;
+  int P = sp->prec < 0 ? 6 : (sp->prec == 0 ? 1 : sp->prec);
   if (m) {
-    float_digits(m, e, &x);
+    if (lc == 'f')
+      float_digits(m, e, &x, prec + 1, FD_MAX);
+    else
+      float_digits(m, e, &x, 1 << 30, (lc == 'e' ? prec : P) + 2);
   } else {
     x.n = 0;
     x.dp = 0;
   }
   b.x = &x;
 
-  int prec = sp->prec < 0 ? 6 : sp->prec;
   if (lc == 'f') {
     dec_round(&x, x.dp + prec);
     b.style = 'f';
@@ -618,7 +645,6 @@ static void convert_float(Out *o, Spec *sp, int conv, va_list *ap) {
     // %g (C11 7.21.6.1p8): P dígitos significativos; X é o expoente que o
     // estilo e daria. Estilo f se P > X >= -4, senão e; sem '#', sem zeros
     // finais na fração (nem o ponto, se ela some).
-    int P = sp->prec < 0 ? 6 : (sp->prec == 0 ? 1 : sp->prec);
     int X = 0;
     if (x.n) {
       Dec y = x;

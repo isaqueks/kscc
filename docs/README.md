@@ -24,8 +24,9 @@ Nada aqui é código ainda. Estes documentos são a especificação que o fork d
 1. **Fork, não reescrita.** Front-end (tokenizer, preprocessador, parser, tipos) do chibicc fica
    quase intacto. Só `codegen.c` (1.595 linhas) é reescrito, mais ajustes pontuais em `type.c`
    (tamanhos), `parse.c` (constantes e conversões) e `main.c` (driver).
-2. **ILP32**: `int`, `long` e ponteiros com 32 bits. `long long` (64 bits) e `float`/`double`
-   ficam fora da v1 e entram em fases posteriores via rotinas de runtime.
+2. **ILP32**: `int`, `long` e ponteiros com 32 bits. `long long` (64 bits) fica para a fase 5.
+   Ponto flutuante (fase 6): `float`, `double` e `long double` são todos binary32 de 4 bytes,
+   operados inline pela extensão F da VM (doc 02 §1.1; divergência deliberada da norma).
 3. **Codegen de acumulador + pilha**, igual ao chibicc: resultado em `r1`, operando esquerdo
    empilhado com `PUSH`/`POP`, `r2` como segundo operando, `r3`–`r5` como temporários. Sem
    alocação de registradores na v1. Correção primeiro, desempenho depois.

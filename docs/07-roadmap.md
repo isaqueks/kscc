@@ -19,6 +19,10 @@ Csmith + gerador próprio sem divergência, `hello`/`blink`/`selftest` em C roda
 QEMU. Duas revisões adversariais independentes corrigiram 15 bugs no compilador (8 de código
 errado silencioso, a maioria herdada do chibicc) e 2 na libks.
 
+**Estado (18/11/2026): fase 6 (ponto flutuante) concluída; fase 5 pendente.** 156 testes
+unitários, 38/41 arquivos da suite do chibicc (`float.c` incluído), 59 programas diferenciais,
+fuzz com programas float, `fselftest` no QEMU.
+
 ### Fase 0 — Fork e esqueleto ✅
 - Clonar chibicc (commit `90d1f7f`, 2020-12-07), renomear para `kscc`, manter `LICENSE`.
 - `Makefile` do projeto: constrói `kscc`, encontra `ksas`/`ksvm` (variável `KSVM2_HOME`,
@@ -92,11 +96,35 @@ kscc com o kscc e rodá-lo dentro do `ksvm`. O chibicc guarda constantes em `int
   rotina; comparações em dois passos.
 - `int64_t`, `%lld`.
 
-### Fase 6 — Ponto flutuante
-- Depende da decisão na ksvm2: extensão F (opcodes soft-float na VM) ou biblioteca
-  `libfloat`. O codegen chama `__ks_addsf3`, `__ks_mulsf3`, … em qualquer caso; a diferença é
-  se essas rotinas são `.ksasm` de 3 linhas (opcodes F) ou C/asm de centenas de linhas.
-- `float`/`double` (`double` = IEEE binary64 via rotinas de 64 bits) e `%f` no `printf`.
+### Fase 6 — Ponto flutuante ✅
+- A ksvm2 ganhou a extensão F (binary32 nos registradores inteiros, doc 04 §5.7 da ksvm2). O
+  codegen a usa **inline**, sem rotinas de runtime: `fadd fsub fmul fdiv fneg`, `fcmp` com as
+  condições do ARM VFP (corretas com NaN), `itof utof ftoi ftou` na tabela de casts (classe
+  F32), `fcmp` com `zr` para valor de verdade, builtins `__builtin_sqrtf`... (doc 03 §1).
+- `float`, `double` e `long double` são **todos binary32 de 4 bytes** (doc 02 §1.1; divergência
+  deliberada), com os três kinds distintos na linguagem. ABI: float é um `int` de 32 bits.
+- Constantes dobradas em binary32 com o NaN canônico e a saturação da VM: os mesmos bits que em
+  tempo de execução. `x++` em float devolve o valor antigo exato.
+- libks: `<math.h>` (sem transcendentais), `printf %f %e %g %a` exato (igual ao glibc) e
+  `strtof` corretamente arredondado, ambos só com aritmética inteira; `<float.h>` corrigido. A
+  conversão do `printf` é uma referência fraca no link (só entra com float em variádica).
+- Testes: unitários de cada item (bits, NaN, −0, saturação, ABI, constantes, erros), `float.c` da
+  suite e os trechos `KSCC_HAS_FLOAT` reativados, 16 diferenciais contra o
+  `gcc -m32 -msse -mfpmath=sse -fsingle-precision-constant`, fuzz `gen_expr.py SEMENTE float`,
+  `fselftest` no desktop e no QEMU (no AVR, a falta da extensão é detectada).
+
+Pendências da fase 6:
+- **`double` de verdade** (binary64): exigiria soft-float de 64 bits em rotinas `__ks_*df3` (a VM
+  não tem binary64 nem pares de registradores) e muda a ABI (8 bytes, pares de registradores) —
+  depende da fase 5. Até lá `double` é binary32.
+- **Funções transcendentais** (`sin cos tan exp log pow atan2 hypot`...) em C sobre a extensão F.
+- **AVR**: a porta não tem a extensão F (não cabe na meta de 12 KB da VM). Opções: soft-float em
+  C na libks chamado pelo codegen quando `-mno-float-ext` (ou por armadilha do `BAD_OPCODE`), ou
+  a extensão numa variante maior da porta. Hoje float em AVR não é suportado (`printf %f` e
+  `strtof` funcionam, por serem inteiros).
+- `fenv.h` (a VM não tem modos de arredondamento nem flags de exceção), `complex.h`.
+- `strtof` não liga `ERANGE` para resultados subnormais (o glibc liga se inexato) e ignora o
+  payload de `nan(...)`; `printf %f` usa ~500 bytes de pilha.
 
 ### Fase 7 — Qualidade de código
 Medir com `INSN_COUNT` nos benchmarks antes de cada item:
@@ -135,7 +163,7 @@ Tamanho final estimado: `codegen.c` ~1.400 linhas (sem float), `libks` ~1.700 li
 | Programas de teste muito grandes para o `ksas` | Falha de montagem | Pré-requisito de limites configuráveis |
 | Desempenho ruim da v1 (push/pop em tudo) | Benchmarks lentos; não bloqueia correção | Fase 7; a VM faz ≥ 50 M instruções/s, então mesmo código ingênuo é utilizável |
 | `alloca`/VLA mexem em `sp` com temporários empilhados | Bugs sutis de pilha | Portar fielmente `builtin_alloca` do chibicc, que já resolve isso movendo os temporários; teste `alloca.c` e `vla.c` |
-| Fase 6 depende de decisão na ksvm2 | Bloqueio | Codegen chama rotinas `__ks_*sf3` desde já; a implementação pode ser trocada sem mexer no compilador |
+| Fase 6 depende de decisão na ksvm2 | Bloqueio | Resolvido: a ksvm2 ganhou a extensão F e o codegen a usa inline (fase 6 ✅) |
 | Divergir demais do chibicc e perder a capacidade de comparar | Manutenção mais cara | Manter nomes e estrutura de funções; `tools/diff_upstream.sh` na revisão de cada fase |
 
 ## 4. Estrutura do repositório `kscc`

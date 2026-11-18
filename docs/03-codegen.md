@@ -37,7 +37,7 @@ pop  r2                 ; depth--
 | array, struct, union, função, VLA | nada (o valor é o endereço) |
 | 1 byte signed / unsigned | `ldbs r1, [r1]` / `ldb r1, [r1]` |
 | 2 bytes | `ldhs r1, [r1]` / `ldh r1, [r1]` |
-| 4 bytes | `ldw r1, [r1]` |
+| 4 bytes (inclusive `float`/`double`/`long double`) | `ldw r1, [r1]` |
 
 ### `store(ty)` — valor em `r1`, endereço empilhado
 ```asm
@@ -56,6 +56,9 @@ x86 usa `cmp $0, %eax` + `je`. KSVM:
 cmp r1, zr              ; flags de r1 - 0: Z = (r1 == 0)
 beq L                   ; "je"
 ```
+Ponto flutuante: `fcmp r1, zr` (os bits de `zr` são +0.0). Z = 1 só para ±0, então `beq`/`bne`
+dão o `== 0` do C: **−0 é falso, NaN (unordered, Z = 0) é verdadeiro**. Todos os usuários de
+`cmp_zero` (`if`, laços, `?:`, `!`, `&&`, `||`, cast para `_Bool`) desviam por Z.
 Como `cmp` é a única fonte de flags e `movi`/`mov`/`push`/`pop` não as alteram, as sequências
 `cmp` → `movi` → `bcc` do chibicc continuam corretas.
 
@@ -68,21 +71,42 @@ movi r1, 0
 L_set_N:
 ```
 Escolha de `cc` sem sinal quando `lhs->ty->is_unsigned` (o chibicc já faz essa distinção com
-`setb`/`setbe` vs `setl`/`setle`). Otimização óbvia para a fase 7: quando a comparação é usada
+`setb`/`setbe` vs `setl`/`setle`). Ponto flutuante: `fcmp r1, r2` e as condições do ARM VFP (doc
+04 §5.7 da ksvm2), corretas com NaN:
+
+| C | depois de `fcmp a, b` | com NaN |
+|---|-----------------------|---------|
+| `a == b` | `beq` | falso |
+| `a != b` | `bne` | **verdadeiro** |
+| `a < b` | `bmi` | falso |
+| `a <= b` | `bls` | falso |
+| `a > b`, `a >= b` | o parser troca os lados (`b < a`, `b <= a`): `bmi`/`bls` | falso |
+
+`!(a < b)` é `ND_NOT` sobre o 0/1 da comparação, então vale 1 com NaN (≠ `a >= b`, que vale 0).
+Nunca se usa `cmp` inteiro para comparar floats (`+0 == -0` e NaN dariam errado).
+
+Otimização óbvia para a fase 7: quando a comparação é usada
 diretamente em `if`/`while`/`for`/`?:`/`&&`/`||`, fundir no desvio e não materializar 0/1.
 
 ### `cast(from, to)`
-A tabela `cast_table[][]` do chibicc (10×10 de strings) vira uma tabela sobre 5 classes:
-`i8, i16, i32, u8, u16, u32, bool` (float/long long entram nas fases 5–6).
+A tabela `cast_table[][]` do chibicc (10×10 de strings) vira uma tabela 7×7 sobre as classes
+`i8, i16, i32, u8, u16, u32, f32` (`f32` = `float`, `double` e `long double`; `long long` entra
+na fase 5), mais `bool` tratado à parte.
 
-| destino | KSVM |
-|---------|------|
-| `i8` | `sxb r1, r1` |
-| `u8` | `zxb r1, r1` |
-| `i16` | `sxh r1, r1` |
-| `u16` | `zxh r1, r1` |
-| `i32`/`u32`/ponteiro | nada |
-| `bool` | `cmp r1, zr; movi r1, 1; bne L; movi r1, 0; L:` |
+| origem → destino | KSVM |
+|------------------|------|
+| inteiro → `i8` / `u8` / `i16` / `u16` | `sxb` / `zxb` / `sxh` / `zxh r1, r1` |
+| inteiro → `i32`/`u32`/ponteiro | nada |
+| `i8 i16 i32 u8 u16` → `f32` | `itof r1, r1` (com sinal; RNE) |
+| `u32` → `f32` | `utof r1, r1` (RNE: `0xFFFFFFFF` → 2³²) |
+| `f32` → `i32` | `ftoi r1, r1` (trunca; satura em `INT32_MIN/MAX`; NaN → 0) |
+| `f32` → `u32` | `ftou r1, r1` (trunca; negativos → 0, ≥ 2³² → `UINT32_MAX`; NaN → 0) |
+| `f32` → `i8` / `u8` / `i16` / `u16` | `ftoi r1, r1` e depois `sxb` / `zxb` / `sxh` / `zxh` (como o `cvttss2si` do gcc) |
+| `f32` → `f32` | nada (os três tipos são binary32) |
+| qualquer → `bool` | `cmp_zero` (`cmp` ou `fcmp` com `zr`) + `movi r1, 1; bne L; movi r1, 0; L:` |
+
+Fora do alcance a conversão float → inteiro é UB em C; o kscc dá o resultado definido da VM, o
+mesmo em todo host (e o mesmo nas constantes dobradas pelo parser, §2).
 
 ### Aritmética (`r1 = r1 op r2`)
 | C | KSVM | Observação |
@@ -98,6 +122,36 @@ A tabela `cast_table[][]` do chibicc (10×10 de strings) vira uma tabela sobre 5
 | `~` | `not r1, r1` | |
 | `!` | `cmp r1, zr; movi r1, 1; beq L; movi r1, 0; L:` | |
 | `&&` `\|\|` | mesma estrutura de labels do chibicc com `cmp r1, zr` + `beq`/`bne` | |
+
+### Ponto flutuante (fase 6)
+Valores `float`/`double`/`long double` vivem em `r1` como os bits do binary32; load/store/push/
+pop/argumentos/retorno são os de um `int` de 32 bits. As operações usam a extensão F da VM,
+**inline, sem rotinas de runtime**, e nunca `add`/`cmp` inteiros:
+
+| C | KSVM |
+|---|------|
+| `+` `-` `*` `/` | `fadd` / `fsub` / `fmul` / `fdiv r1, r1, r2` (x/±0 = ±inf, 0/0 = NaN, sem fault) |
+| unário `-` | `fneg r1, r1` (só o sinal: `-0.0f` a partir de `0.0f`, também em NaN) |
+| `==` `!=` `<` `<=` (e `>` `>=` trocados) | `fcmp r1, r2` + `set_cond` com `eq`/`ne`/`mi`/`ls` (tabela acima) |
+| valor de verdade | `fcmp r1, zr` (`cmp_zero`) |
+| casts | `itof`/`utof`/`ftoi`/`ftou` (tabela de `cast`) |
+| literal | `li r1, <bits> ; valor` (os bits calculados no host; mesmo efeito de `fli`) |
+| `x++`, `x--` | `p = &x, old = *p, *p = old + 1, old` (o `(x += 1) - 1` do chibicc arredonda) |
+| `%`, `& \| ^ << >> ~` com float | erro de compilação (`add_type`) |
+| `switch` com expressão float, `case 1.5`, `int a[2.5]`, `#if 1.5` | erro de compilação |
+
+Builtins (parse.c, `float_builtin`; nó `ND_FBUILTIN`), uma instrução cada:
+
+| builtin (também sem sufixo e com `l`) | KSVM |
+|---------------------------------------|------|
+| `__builtin_sqrtf` `fabsf` `floorf` `ceilf` `truncf` `rintf` `nearbyintf` | `fsqrt` `fabs` `ffloor` `fceil` `ftrunc` `frint` `frint r1, r1` |
+| `__builtin_fminf(x, y)` `fmaxf` | `fmin` / `fmax r1, r1, r2` (um NaN: o outro operando) |
+| `__builtin_isnan(x)` | `fcmp r1, r1` + `bvs` |
+| `__builtin_isinf(x)` / `isfinite(x)` | `fabs r1, r1; li r2, 0x7F800000; fcmp r1, r2` + `beq` / `bmi` |
+| `__builtin_signbit(x)` | `shri r1, r1, 31` |
+| `__builtin_inff()` `huge_valf()` `nanf("")` | constantes (+inf, `0x7FC00000`; o payload do `nan` é ignorado) |
+
+`<math.h>` da libks mapeia `sqrtf`, `fabs`, `floor`... para esses builtins (doc 05). Ao contrário do gcc, o kscc não dobra esses builtins em expressões constantes: `static float r = __builtin_sqrtf(2);` é erro ("not a compile-time constant"); as constantes `inf`/`nan` são constantes de verdade (`INFINITY` e `NAN` servem em inicializadores de globais).
 
 Constantes como segundo operando: na v1 **sempre** via `r2` (`movi`/`movil r2, imm` após o
 `pop` ser evitado). Fase 7 usa `addi`/`andi`/`shli` etc. quando `rhs` é `ND_NUM` que cabe em
@@ -190,7 +244,7 @@ a expansão muda).
 | Literais compostos locais | `ND_MEMZERO` + stores; inalterado |
 | Globais `static` com o mesmo nome em arquivos diferentes | prefixo `_S<id>_` (doc 02 §5) aplicado em `emit_data`/`emit_text` e em `gen_addr` |
 | `long long` (v1) | `error_tok("long long nao suportado nesta versao")` no parser ao formar o tipo |
-| `float`/`double` (v1) | idem, ao formar o tipo ou ao ver literal de ponto flutuante |
+| Constantes de ponto flutuante (inicializadores de globais, `static`, expressões constantes) | `eval_double` avalia em **binary32**: cada `+ - * /` é feito em `double` no host e arredondado para `float` (para dois operandos binary32 o arredondamento duplo é inócuo: 53 ≥ 2·24 + 2), e um NaN vira o canônico `0x7FC00000` (o x86 dá `0xFFC00000`). Float → inteiro com a saturação da VM (`float_to_int`); comparações, `!`, `&&`, `\|\|` e `?:` com operandos float usam o valor de ponto flutuante. Resultado: a constante dobrada tem o mesmo padrão de bits que a mesma conta em tempo de execução (`test/unit/float_const_fold.c`, `test/diff/float_const_fold.c`), como no `gcc -fsingle-precision-constant` |
 | `_Thread_local`, `_Atomic`, `asm` | erro de compilação explícito |
 
 ## 3. Verificação do codegen durante a implementação

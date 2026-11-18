@@ -31,7 +31,7 @@ virar desempenho).
 | Arquivo | Linhas | Mudança |
 |---------|-------:|---------|
 | `codegen.c` | 1.595 | **Reescrito** para a KSVM (doc 03). Mantém a estrutura e os nomes de função para facilitar comparação com o original |
-| `type.c` | 307 | Tamanhos: `long` 4, ponteiro 4, `long long` 8 (fase 5), `float/double` 4/8 (fase 6, mas tipos existem desde já para o parser aceitar declarações) |
+| `type.c` | 307 | Tamanhos: `long` 4, ponteiro 4, `long long` 8 (fase 5), `float`/`double`/`long double` todos 4, binary32 (fase 6; a VM não tem binary64, doc 02 §1.1) |
 | `parse.c` | 3.368 | Constant folding (`eval`) e conversões usuais passam a respeitar 32 bits; `ptrdiff_t`/`size_t` viram `int`/`unsigned`; `__builtin_*` reduzidos |
 | `main.c` | 791 | Driver: `-S`, `-c`, `-o`, `-I`, `-D`, `-E`; `assemble()` chama `ksas`; `run_linker()` vira a concatenação do doc 04 |
 | `preprocess.c`, `tokenize.c` | 2.013 | Macros predefinidas (`__ksvm__`, `__ILP32__`, tamanhos) e remoção de `__x86_64__` |

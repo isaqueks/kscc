@@ -18,7 +18,7 @@
 // variádica: o printf chama pelo ponteiro __ks_weak_printf_float, uma
 // referência fraca (src/link.c, passo 5) que fica nula sem esse uso; aí a
 // conversão consome o argumento e imprime "<?>". Sem isso, todo programa
-// com printf levaria ~18 KB a mais (o hello não caberia no ATmega328P).
+// com printf levaria ~20 KB a mais (o hello não caberia no ATmega328P).
 #include <stdarg.h>
 #include <stdio.h>
 

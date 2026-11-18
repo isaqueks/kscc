@@ -383,7 +383,7 @@ static char *resolve_commons(char **texts, int ntexts) {
 //         ; kscc-need: __ks_weak_nome
 //     que o codegen emite (é comentário para o ksas). Com a definição
 //     incluída, o símbolo comum some (resolve_commons). É assim que o
-//     printf só liga a conversão de ponto flutuante (~18 KB) quando alguma
+//     printf só liga a conversão de ponto flutuante (~20 KB) quando alguma
 //     unidade passa float/double a uma função variádica, e um programa que
 //     passa floats a uma variádica própria sem usar printf não a leva.
 //

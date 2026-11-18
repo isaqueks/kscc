@@ -51,7 +51,15 @@ um formato de objeto relocável e um linker custaria mais que o resto do kscc. E
 - **Código morto** (implementado na fase 4): cada label global da `libks.kso` delimita um bloco;
   o link inclui só os blocos alcançáveis a partir do código do usuário (referências em
   `call`/`la`/`.word`/etc.). Uma definição do usuário vence a da libks. `hello.c` com `printf`
-  cai de 43 KB para 14 KB. `-Wl,--no-gc-sections` desliga.
+  cai de 43 KB para 15 KB. `-Wl,--no-gc-sections` desliga.
+- **Referência fraca** (fase 6): um símbolo comum da libks com nome `__ks_weak_*` (definição
+  provisória numa unidade, inicializada em outra) resolve para o seu marcador comum, um `.bss`
+  zerado. A definição inicializada só entra se esse marcador entrou no link **e** alguma unidade
+  do usuário a pede com a linha `; kscc-need: __ks_weak_nome` (comentário para o `ksas`). O
+  codegen emite `; kscc-need: __ks_weak_printf_float` numa unidade que passa `float`/`double`
+  como argumento anônimo de uma função variádica: assim a conversão de ponto flutuante do
+  `printf` (~20 KB, doc 05 §2) só é ligada quando o programa usa `printf` **e** passa floats a
+  variádicas. Sem ela, `%f` consome o argumento e imprime `<?>`.
 
 Limites: a concatenação cria uma única seção `.text` de até 16 MiB (limite do `ksas`). Muito
 além de qualquer programa de teste; para um projeto grande seria a hora de um linker real.
@@ -62,18 +70,22 @@ além de qualquer programa de teste; para um projeto grande seria a hora de um l
 __ksvm__ 1        __ksvm_isa__ 0x0200     __ILP32__ 1
 __CHAR_BIT__ 8    __SIZEOF_INT__ 4  __SIZEOF_LONG__ 4  __SIZEOF_POINTER__ 4
 __SIZEOF_SHORT__ 2  __SIZEOF_LONG_LONG__ 8 (fase 5)
+__SIZEOF_FLOAT__ 4  __SIZEOF_DOUBLE__ 4  __SIZEOF_LONG_DOUBLE__ 4   (todos binary32, doc 02 §1.1)
+__FLT_EVAL_METHOD__ 0   __kscc_float__ 1
 __STDC__ 1  __STDC_VERSION__ 201112L  __STDC_HOSTED__ 1 (libks) ou 0 (-ffreestanding)
 __kscc__ 1  __kscc_version__ "0.1"
 __BYTE_ORDER__ __ORDER_LITTLE_ENDIAN__
 ```
 Remover `__x86_64__`, `__linux__`, `__gnu_linux__`, `__LP64__` que o chibicc define.
+`__STDC_IEC_559__` não é definida: `double` não é binary64.
 
 ## 5. Caminhos de include
 
 1. `-I` da linha de comando;
 2. `<prefixo>/include` (headers da `libks`, doc 05);
 3. `<prefixo>/include/kscc` (headers que o próprio compilador fornece: `stddef.h`, `stdarg.h`,
-   `stdbool.h`, `stdint.h`, `limits.h`, `stdalign.h`, `stdnoreturn.h`, `float.h` só na fase 6).
+   `stdbool.h`, `stdint.h`, `limits.h`, `stdalign.h`, `stdnoreturn.h`, `float.h`, com `DBL_*`
+   e `LDBL_*` iguais aos `FLT_*`).
 
 Nunca `/usr/include`: os headers do host assumem LP64 e glibc.
 
@@ -91,7 +103,11 @@ que função o `pc` cai.
 ## 7. Integração com as portas embarcadas
 
 `kscc -o app.ksx app.c` e depois, na ksvm2, `make avr-custom KSX=app.ksx` ou
-`make arm-custom KSX=app.ksx`. A `libks` usa só syscalls dos grupos 0, 1, 2, 5 (console,
+`make arm-custom KSX=app.ksx`. Ponto flutuante usa a extensão F da VM, presente no desktop e no
+Cortex-M e **ausente na porta AVR** (`CAPS(0x4000)` bit 2; uma instrução F lá dá
+`FAULT_BAD_OPCODE`): um programa que pode rodar nos dois deve consultar `ks_sys_caps(0x4000) & 4`
+antes de calcular com float (`test/embedded/fselftest.c`). `printf("%f")` e `strtof` não usam
+instruções F e funcionam também no AVR. A `libks` usa só syscalls dos grupos 0, 1, 2, 5 (console,
 tempo, memória), todos implementados em `hal_avr` e `hal_arm_cm`, então um programa C que só
 usa `printf`/`puts`/`getchar`/`millis` roda nos três lugares sem mudar.
 

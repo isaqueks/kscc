@@ -11,11 +11,40 @@ precisa. A `libks` e qualquer código `.ksasm` chamado de C devem segui-la.
 | `short`, `unsigned short` | 2 | 2 | idem (`ldhs`/`ldh`) |
 | `int`, `unsigned`, `long`, `unsigned long`, enum, ponteiro, `size_t`, `ptrdiff_t`, `intptr_t` | 4 | 4 | um registrador |
 | `long long`, `unsigned long long` | 8 | 4 | par de registradores (fase 5) — **não suportado na v1: erro de compilação** |
-| `float` / `double` / `long double` | 4 / 8 / 8 | 4 | fase 6 — **erro na v1** |
+| `float`, `double`, `long double` | 4 | 4 | um registrador, com os bits do IEEE 754 **binary32** (fase 6; ver §1.1) |
 | struct/union | soma dos membros | maior alinhamento dos membros (máx. 4) | sempre em memória |
 
 `char` é **signed** (como x86). Alinhamento máximo natural é 4; `_Alignas(8)` ou maior é aceito
 e honrado só em globais e na pilha (ajuste de `sp`), nunca necessário para a VM.
+
+### 1.1 Ponto flutuante: tudo binary32
+
+A KSVM só tem aritmética de ponto flutuante de 32 bits (extensão F, doc 04 §5.7 da ksvm2: IEEE
+754 binary32 nos registradores inteiros, RNE, NaN canônico `0x7FC00000`, subnormais sem
+flush-to-zero). Por isso **`float`, `double` e `long double` têm todos 4 bytes, alinhamento 4 e
+representação binary32**. É uma **divergência deliberada da norma** (C11 5.2.4.2.2 pede
+`DBL_DIG >= 10`, que binary32 não dá), a mesma do `-fshort-double` do avr-gcc antigo. Não há
+binary64 em software (fica como pendência, doc 07).
+
+Consequências visíveis para o programa:
+- `sizeof(double) == sizeof(long double) == 4`; `__SIZEOF_DOUBLE__` e `__SIZEOF_LONG_DOUBLE__`
+  valem 4; em `<float.h>` os `DBL_*` e `LDBL_*` são iguais aos `FLT_*` (`DBL_EPSILON` = 2⁻²³,
+  `DBL_MAX` ≈ 3,4e38, `DBL_DIG` 6, `DECIMAL_DIG` 9). `__STDC_IEC_559__` não é definida.
+- Literais sem sufixo (`1.5`, `0.1`) e com `L` são binary32, convertidos do decimal com um único
+  arredondamento (como o `gcc -fsingle-precision-constant`). `0.1 + 0.2 == 0.3` é verdadeiro
+  (em binary64 seria falso).
+- A promoção `float` → `double` (argumentos variádicos, protótipos sem tipo) e as conversões entre
+  os três tipos são identidade: nenhum bit muda.
+- Os três continuam **tipos distintos** na linguagem: `_Generic`, `__builtin_types_compatible_p`,
+  compatibilidade de declarações e as conversões aritméticas usuais os distinguem (`1.0f + 1.0`
+  tem tipo `double`), e `%f`/`%Lf` no `printf` funcionam como esperado.
+- Operações: `+ - * /` são as da VM, com resultado idêntico bit a bit em todos os hosts
+  (`FLT_EVAL_METHOD` 0: cada operação no próprio tipo, sem precisão estendida; `FLT_ROUNDS` 1).
+  Conversão de float para inteiro fora do alcance (UB em C) satura (`(int)1e10f == INT_MAX`,
+  `(unsigned)-1.0f == 0`, NaN → 0); o x86 daria `INT_MIN`.
+- A extensão F é opcional na VM: a porta AVR não a tem (`CAPS(0x4000)` bit 2 desligado), e lá uma
+  operação de ponto flutuante dá `FAULT_BAD_OPCODE`. **Ponto flutuante em AVR não é suportado**;
+  `printf("%f")` e `strtof` funcionam mesmo assim (são só aritmética inteira, doc 05 §2).
 
 ## 2. Registradores
 
@@ -48,17 +77,20 @@ começar a usá-los, o prólogo salva só os que a função toca.
 
 Isso é exatamente o `push_args` do chibicc (duas passadas: primeiro os que vão para a pilha,
 depois os que vão para registradores), só que com 4 registradores em vez de 6 e sem a classe
-de ponto flutuante.
+de ponto flutuante: **um `float`/`double` passa exatamente como um `int` de 32 bits** (conta
+entre os quatro primeiros escalares, vai em `r1`–`r4` ou num slot de 4 bytes da pilha). Struct
+com floats é igual a struct com ints (sempre na pilha, copiada inteira).
 
 ### 3.2 Funções variádicas
 Todos os argumentos, inclusive os nomeados, vão para a pilha. O chamado sabe que é variádica
 pelo seu próprio protótipo; o chamador sabe pelo protótipo visível (C exige protótipo para
 chamar variádicas, e o chibicc já rejeita a falta dele). `va_list` é um `char*` que aponta para
 o primeiro argumento anônimo em `fp + 8 + (tamanho dos nomeados)`; `va_arg(ap, T)` lê 4 bytes
-(ou `sizeof(T)` arredondado a 4) e avança. Promoções padrão (`char`→`int`) já são do C.
+(ou `sizeof(T)` arredondado a 4) e avança. Promoções padrão (`char`→`int`, `float`→`double`) já
+são do C; a de `float` não muda os 4 bytes, e `va_arg(ap, double)` lê o binary32.
 
 ### 3.3 Valor de retorno
-- Escalares: `r1`.
+- Escalares (inclusive `float`/`double`, os bits do binary32): `r1`.
 - Struct/union de **até 4 bytes**: `r1` (bytes baixos).
 - Struct/union maior: o chamador reserva espaço no próprio frame e passa o endereço como
   **argumento oculto em `r1`**, deslocando os demais (`r2`–`r4`, pilha). O chamado copia o

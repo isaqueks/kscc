@@ -18,19 +18,63 @@ chibicc e para programas úteis em microcontroladores. Não é POSIX e não fing
 |--------|---------|-------------|
 | `string.h` | `memcpy memmove memset memcmp memchr strlen strnlen strcpy strncpy strcat strncat strcmp strncmp strchr strrchr strstr strdup` | `memcpy` word a word quando alinhado; é a função mais chamada pelo codegen de struct (não: o codegen copia inline; `memcpy` é só para o usuário) |
 | `ctype.h` | `isdigit isalpha isalnum isspace isupper islower toupper tolower isxdigit isprint` | tabela de 128 bytes em `.rodata` |
-| `stdlib.h` | `abs labs atoi atol strtol strtoul rand srand exit abort qsort bsearch malloc calloc realloc free` | `exit` chama `atexit` (até 8 handlers) e `ks_sys_exit` |
-| `stdio.h` | `putchar getchar puts gets_s fputs printf sprintf snprintf vprintf vsprintf vsnprintf fprintf(stdout/stderr) fflush` | `printf` suporta `%d %i %u %x %X %o %c %s %p %%`, flags `- 0 +`, largura, precisão, `l` (igual a `int`), `h`, `hh`, `z`; **sem** `%f` até a fase 6, **sem** `%lld` até a fase 5. Saída bufferizada em 128 bytes, descarregada em `\n`, `fflush` e `exit` |
+| `stdlib.h` | `abs labs atoi atol strtol strtoul strtof strtod strtold atof rand srand exit abort qsort bsearch malloc calloc realloc free` | `exit` chama `atexit` (até 8 handlers) e `ks_sys_exit`. `strtof` e família: §2.1 |
+| `stdio.h` | `putchar getchar puts gets_s fputs printf sprintf snprintf vprintf vsprintf vsnprintf fprintf(stdout/stderr) fflush` | `printf` suporta `%d %i %u %x %X %o %c %s %p %%` e `%f %F %e %E %g %G %a %A` (§2.1), flags `- 0 + espaço #`, largura, precisão, `l` (igual a `int`), `h`, `hh`, `z`, `L` (só nas de ponto flutuante); **sem** `%lld` até a fase 5. Saída bufferizada em 128 bytes, descarregada em `\n`, `fflush` e `exit` |
+| `math.h` | `sqrt fabs floor ceil trunc rint nearbyint fmin fmax round fmod copysign` (e as versões `f` e `l`, iguais), `isnan isinf isfinite signbit fpclassify isnormal`, `isgreater isgreaterequal isless islessequal islessgreater isunordered`, `HUGE_VAL HUGE_VALF HUGE_VALL INFINITY NAN`, `FP_*`, `M_PI` e as demais `M_*` | As que são uma instrução F (`sqrt`...`fmax`) e as classificações são macros para os builtins do kscc (doc 03 §1, ponto flutuante), sem chamada; as funções existem também (`(sqrtf)(x)`, `&sqrtf`). `round` (empate para longe de zero, sem o erro do `floor(x + 0.5)`) e `fmod` (exato, aritmética inteira sobre as mantissas) são C. `math_errhandling` 0: não há errno nem exceções. **Sem** `sin cos tan exp log pow` e afins nesta fase |
 | `assert.h` | `assert(x)` → mensagem `arquivo:linha: assert(x) falhou` + saída com código 1 (sem `atexit`). `abort()` continua sendo `trap 1` (fault TRAP, código 78 no runner) | |
 | `errno.h` | `errno` (= `ks_errno`), `ENOSYS EINVAL EIO EAGAIN ENOMEM` mapeados dos `KSVM_ERR_*` | |
 | `stdarg.h` | `va_list va_start va_arg va_end va_copy` | `va_list` = `char*`; `va_start` é builtin do compilador (doc 03) |
 | `stddef.h` `stdint.h` `stdbool.h` `limits.h` `stdalign.h` `stdnoreturn.h` `iso646.h` | tipos e constantes ILP32 | `int64_t` só na fase 5 |
+| `float.h` (do compilador) | `FLT_*`, `DBL_*`, `LDBL_*` | todos de binary32 (doc 02 §1.1): `DBL_EPSILON` = `FLT_EPSILON` = 2⁻²³, `DBL_DIG` 6, `DECIMAL_DIG` 9 |
 | `ksvm/syscall.h` | protótipos das `ks_sys_*` + `struct ks_mem_info` | específico da KSVM |
 | `ksvm/time.h` | `ks_millis`, `ks_sleep_ms` | |
 | `ksvm/gpio.h` | `ks_pin_mode`, `ks_pin_write`, `ks_pin_read`, `ks_analog_read`, `ks_pwm_write` | `static inline`; retornam −1 com `errno = ENOSYS` se a HAL não implementa a syscall (`CAPS` da ksvm2 não enxerga o grupo 4, que é repassado à HAL, então não é consultado) |
 
 Fora: `FILE*` genérico, `fopen` (grupo 3 pode ganhar um `ks_fopen` só no desktop), `time.h`
 de calendário, locale, `setjmp` (possível em assembly: salvar `fp`, `sp`, endereço de retorno;
-fica como extensão), `signal`.
+fica como extensão), `signal`, funções transcendentais de `math.h`.
+
+### 2.1 Ponto flutuante na `libks`: `printf` e `strtof`
+
+Ambos usam **só aritmética inteira de 32 bits** (o argumento de `%f` é lido como os bits do
+binary32, `va_arg(ap, unsigned)`), então funcionam também numa VM sem a extensão F (porta AVR).
+
+**`printf %f %e %g %a` — conversão exata.** Um binary32 finito é m·2ᵉ com m < 2²⁴; a sua
+expansão decimal é finita (até 39 dígitos inteiros, 149 de fração, no máximo 112 significativos).
+`float_digits` (`printf.c`) gera os dígitos exatos com um inteiro grande de limbs de 16 bits,
+quatro por passada, e para no último que o arredondamento precisa (mais um dígito de "sticky");
+o arredondamento para a precisão pedida é para o mais próximo com **empate para o par sobre o
+valor exato**, como o glibc. Resultado: para qualquer float e qualquer precisão, os caracteres são
+os mesmos que o gcc/glibc imprimem para esse float (promovido a double, que o representa
+exatamente) — conferido em `test/diff/libks_float_printf.c` com 431 valores e 22 formatos cada.
+Única diferença conhecida: o glibc 2.39 imprime `%#g` de 999999.5 como `1.e+06`, e a libks dá o
+`1.00000e+06` que o C11 manda (o `#` mantém os zeros finais). Detalhes: precisão padrão 6; `%g`
+segue C11 7.21.6.1p8 (estilo `e` se X < −4 ou X ≥ P); `%a` imprime a mantissa normalizada
+(`0x1.99999ap-4`, também para subnormais, que são normais em double), sem zeros finais sem
+precisão e arredondando (empate para o par, contando o dígito antes do ponto) com precisão;
+`inf`/`nan` (`INF`/`NAN` em `F E G A`) levam o sinal do bit 31, inclusive `-nan`, e o flag `0` não
+se aplica a eles. Custo: ~500 bytes de pilha e ~5–30 mil instruções por conversão (mais para
+valores muito grandes ou muito pequenos).
+
+Tamanho: a conversão tem ~20 KB de código (`printf("%.3f", x)` sozinho dá um `.ksx` de 35 KB, contra 15 KB do `hello`). Ela é uma **referência fraca** (doc 04 §3): só entra
+no link quando o programa usa `printf` e alguma unidade passa `float`/`double` a uma função
+variádica; senão `%f` consome os 4 bytes do argumento e imprime `<?>`, e o `hello` continua com
+15 KB.
+
+**`strtof`, `strtod`, `strtold`, `atof` — corretamente arredondadas** (as quatro são a mesma
+conversão). Aceitam espaços iniciais, sinal, decimal com `.` e expoente `e`, hexadecimal `0x`
+com `.` e expoente `p`, `inf`/`infinity` e `nan`/`nan(...)`, sem distinção de maiúsculas; sem
+conversão devolvem 0 com `*end = s`. O valor decimal vira uma fração exata num/den de inteiros
+grandes (até 640 bits), dividida até 26 bits de quociente mais o resto: o resultado é o binary32
+mais próximo, empate para o par, inclusive subnormais e o limiar de overflow
+(3.4028235677973366e38 → `FLT_MAX`, ...67e38 → inf). Os primeiros 120 dígitos significativos são
+guardados e os seguintes só contam como "há algo não nulo", o que não muda o arredondamento (o
+ponto médio entre dois binary32 tem no máximo 113 dígitos significativos); o expoente é limitado
+a ±100.000. `errno = ERANGE` em overflow (±inf a partir de um número finito) e em underflow para
+zero a partir de um valor não nulo; um resultado subnormal **não** liga `ERANGE` (o glibc liga
+quando é inexato). O payload de `nan(...)` é ignorado: o resultado é sempre o NaN quieto
+`0x7FC00000` (com o sinal pedido). Conferido contra o glibc em `test/diff/libks_strtof.c`
+(literais de borda e ida e volta de 900 strings) e `test/unit/libks_strtof.c`.
 
 ## 3. `malloc`
 

@@ -24,7 +24,8 @@ static void show(float f) {
 int main(void) {
   float sp[] = {0.0f, -0.0f, 1.0f, -1.5f, 0.5f, 2.5f, 0.125f, 1e-45f, FLT_MIN, FLT_MAX, 1e38f,
                 123456789.0f, 0.1f, 9.999999f, 99999.95f, 1e-5f, 0.0001f, 1e6f, 1e7f,
-                16777216.0f, 0.3f, 0.05f, 0.95f, 1.5e-39f, 2.0e-38f, 999999.25f, 0.00009999f};
+                16777216.0f, 0.3f, 0.05f, 0.95f, 1.5e-39f, 2.0e-38f, 999999.25f, 0.00009999f,
+                25000000.0f, 125000000.0f, 12345650.0f, 35000000.0f};
   for (int i = 0; i < (int)(sizeof(sp) / sizeof(sp[0])); i++)
     show(sp[i]);
   show(fl_from(0x7F800000));

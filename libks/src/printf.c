@@ -356,8 +356,14 @@ static void float_digits(unsigned m, int e, Dec *x, int maxfrac, int maxsig) {
     dec_push(x, ib[i]);
   x->dp = ni;
 
-  if (e >= 0)
+  // Inteiro: sem fração, mas os zeros finais da parte inteira também saem
+  // (dec_round toma qualquer dígito depois do de arredondamento por não
+  // nulo: com eles, 25000000 em %.0e não era empate e dava 3e+07).
+  if (e >= 0) {
+    while (x->n > 0 && x->d[x->n - 1] == '0')
+      x->n--;
     return;
+  }
 
   // Fração: F / 2^k com k = -e, F = m mod 2^k. Cada passo F *= 10^4; os
   // bits a partir de k são os quatro próximos dígitos. Termina quando

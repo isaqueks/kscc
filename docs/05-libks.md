@@ -46,7 +46,7 @@ quatro por passada, e para no último que o arredondamento precisa (mais um díg
 o arredondamento para a precisão pedida é para o mais próximo com **empate para o par sobre o
 valor exato**, como o glibc. Resultado: para qualquer float e qualquer precisão, os caracteres são
 os mesmos que o gcc/glibc imprimem para esse float (promovido a double, que o representa
-exatamente) — conferido em `test/diff/libks_float_printf.c` com 431 valores e 22 formatos cada.
+exatamente) — conferido em `test/diff/libks_float_printf.c` com 435 valores e 22 formatos cada.
 Única diferença conhecida: o glibc 2.39 imprime `%#g` de 999999.5 como `1.e+06`, e a libks dá o
 `1.00000e+06` que o C11 manda (o `#` mantém os zeros finais). Detalhes: precisão padrão 6; `%g`
 segue C11 7.21.6.1p8 (estilo `e` se X < −4 ou X ≥ P); `%a` imprime a mantissa normalizada

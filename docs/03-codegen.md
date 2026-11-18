@@ -138,7 +138,8 @@ pop/argumentos/retorno são os de um `int` de 32 bits. As operações usam a ext
 | literal | `li r1, <bits> ; valor` (os bits calculados no host; mesmo efeito de `fli`) |
 | `x++`, `x--` | `p = &x, old = *p, *p = old + 1, old` (o `(x += 1) - 1` do chibicc arredonda) |
 | `%`, `& \| ^ << >> ~` com float | erro de compilação (`add_type`) |
-| `switch` com expressão float, `case 1.5`, `int a[2.5]`, `#if 1.5` | erro de compilação |
+| `switch` com expressão float, `case 1.5`, `int a[2.5]`, `#if 1.5` (e `#if 1.5 > 1`: qualquer operando float) | erro de compilação |
+| ponteiro <-> float (`a[f]`, `p + 1.5f`, `int *p = f`, `(float)p`, `p == 1.0f`) | erro de compilação (`new_cast`) |
 
 Builtins (parse.c, `float_builtin`; nó `ND_FBUILTIN`), uma instrução cada:
 

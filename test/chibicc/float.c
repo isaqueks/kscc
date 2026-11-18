@@ -1,3 +1,5 @@
+// kscc: float, double e long double são binary32 de 4 bytes (doc 02 §1).
+// Uma única asserção muda (ver "kscc:" abaixo); as do fim são próprias.
 #include "test.h"
 
 int main() {
@@ -37,7 +39,7 @@ int main() {
   ASSERT(35, (unsigned int)(double)35);
   ASSERT(35, (unsigned long)(double)35);
 
-  ASSERT(-2147483648, (double)(unsigned long)(long)-1);
+  ASSERT(2147483647, (double)(unsigned long)(long)-1); // kscc: unsigned long tem 32 bits: 4294967295 vira 4294967296.0, e a conversão para int satura (FTOI); no x86-64 dava INT_MIN
 
   ASSERT(1, 2e3==2e3);
   ASSERT(0, 2e3==2e5);
@@ -87,6 +89,13 @@ int main() {
 
   ASSERT(5, 0.0 ? 3 : 5);
   ASSERT(3, 1.2 ? 3 : 5);
+
+  // kscc: asserções próprias do binary32 (double é o mesmo que float).
+  ASSERT(4, sizeof(double));
+  ASSERT(1, 16777217.0 == 16777216.0); // 2^24 + 1 não é representável
+  ASSERT(1, 0.1 == 0.1f);
+  ASSERT(1, 1e39 == 1e39 * 2); // fora do alcance: inf
+  ASSERT(1, 0.1 + 0.2 == 0.3); // em binary32 é verdadeiro (em binary64 seria falso)
 
   printf("OK\n");
   return 0;

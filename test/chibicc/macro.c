@@ -383,9 +383,7 @@ int main() {
 
 #define CONCAT(x,y) x##y
   ASSERT(5, ({ int f0zz=5; CONCAT(f,0zz); }));
-#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
   ASSERT(5, ({ CONCAT(4,.57) + 0.5; }));
-#endif
 
   ASSERT(11, strlen(__DATE__));
   ASSERT(8, strlen(__TIME__));

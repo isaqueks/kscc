@@ -1,7 +1,7 @@
 // kscc: test/chibicc/common (o "common" do chibicc), agora sobre a libks
 // (doc 05 §4). As funções de <string.h> e exit que esta unidade definia
 // até a fase 3 vêm da libks. As funções auxiliares que dependem de ponto
-// flutuante ficam atrás de KSCC_HAS_FLOAT.
+// flutuante (float/double de 4 bytes, binary32) estão ativas desde a fase 6.
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -59,7 +59,6 @@ int add10_int(int x1, int x2, int x3, int x4, int x5, int x6, int x7, int x8, in
   return x1 + x2 + x3 + x4 + x5 + x6 + x7 + x8 + x9 + x10;
 }
 
-#ifdef KSCC_HAS_FLOAT
 float add_float(float x, float y) {
   return x + y;
 }
@@ -75,7 +74,6 @@ float add10_float(float x1, float x2, float x3, float x4, float x5, float x6, fl
 double add10_double(double x1, double x2, double x3, double x4, double x5, double x6, double x7, double x8, double x9, double x10) {
   return x1 + x2 + x3 + x4 + x5 + x6 + x7 + x8 + x9 + x10;
 }
-#endif
 
 typedef struct { int a,b; short c; char d; } Ty4;
 typedef struct { unsigned char a[3]; } Ty6;
@@ -121,7 +119,6 @@ Ty21 struct_test28(void) {
   return (Ty21){1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20};
 }
 
-#ifdef KSCC_HAS_FLOAT
 typedef struct { int a; float b; double c; } Ty5;
 
 int struct_test5(Ty5 x, int n) {
@@ -135,4 +132,3 @@ int struct_test5(Ty5 x, int n) {
 Ty5 struct_test25(void) {
   return (Ty5){10, 20, 30};
 }
-#endif

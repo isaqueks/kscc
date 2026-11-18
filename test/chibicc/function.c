@@ -91,7 +91,6 @@ char *fmt(char *buf, char *fmt, ...) {
   vsprintf(buf, fmt, ap);
 }
 
-#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
 double add_double(double x, double y);
 float add_float(float x, float y);
 
@@ -102,7 +101,6 @@ float add_float3(float x, float y, float z) {
 double add_double3(double x, double y, double z) {
   return x + y + z;
 }
-#endif
 
 int (*fnptr(int (*fn)(int n, ...)))(int, ...) {
   return fn;
@@ -119,16 +117,13 @@ char *function_fn(void) {
 }
 
 int add10_int(int x1, int x2, int x3, int x4, int x5, int x6, int x7, int x8, int x9, int x10);
-#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
 float add10_float(float x1, float x2, float x3, float x4, float x5, float x6, float x7, float x8, float x9, float x10);
 double add10_double(double x1, double x2, double x3, double x4, double x5, double x6, double x7, double x8, double x9, double x10);
-#endif
 
 int many_args1(int a, int b, int c, int d, int e, int f, int g, int h) {
   return g / h;
 }
 
-#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
 double many_args2(double a, double b, double c, double d, double e,
                   double f, double g, double h, double i, double j) {
   return i / j;
@@ -139,18 +134,13 @@ int many_args3(int a, double b, int c, int d, double e, int f,
                double l, double m, int n, int o, double p) {
   return o / p;
 }
-#endif
 
 typedef struct { int a,b; short c; char d; } Ty4;
-#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
 typedef struct { int a; float b; double c; } Ty5;
-#endif
 typedef struct { unsigned char a[3]; } Ty6;
 typedef struct { long a, b, c; } Ty7;
 
-#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
 int struct_test5(Ty5 x, int n);
-#endif
 int struct_test4(Ty4 x, int n);
 int struct_test6(Ty6 x, int n);
 int struct_test7(Ty7 x, int n);
@@ -164,7 +154,6 @@ int struct_test14(Ty4 x, int n) {
   }
 }
 
-#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
 int struct_test15(Ty5 x, int n) {
   switch (n) {
   case 0: return x.a;
@@ -172,15 +161,12 @@ int struct_test15(Ty5 x, int n) {
   default: return x.c;
   }
 }
-#endif
 
 typedef struct { unsigned char a[10]; } Ty20;
 typedef struct { unsigned char a[20]; } Ty21;
 
 Ty4 struct_test24(void);
-#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
 Ty5 struct_test25(void);
-#endif
 Ty6 struct_test26(void);
 Ty20 struct_test27(void);
 Ty21 struct_test28(void);
@@ -189,11 +175,9 @@ Ty4 struct_test34(void) {
   return (Ty4){10, 20, 30, 40};
 }
 
-#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
 Ty5 struct_test35(void) {
   return (Ty5){10, 20, 30};
 }
-#endif
 
 Ty6 struct_test36(void) {
   return (Ty6){10, 20, 30};
@@ -211,7 +195,6 @@ inline int inline_fn(void) {
   return 3;
 }
 
-#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
 double to_double(long double x) {
   return x;
 }
@@ -219,7 +202,6 @@ double to_double(long double x) {
 long double to_ldouble(int x) {
   return x;
 }
-#endif
 
 int main() {
   ASSERT(3, ret3());
@@ -281,7 +263,6 @@ int main() {
   ASSERT(-5, schar_fn());
   ASSERT(-8, sshort_fn());
 
-#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
   ASSERT(6, add_float(2.3, 3.8));
   ASSERT(6, add_double(2.3, 3.8));
 
@@ -291,7 +272,6 @@ int main() {
   ASSERT(0, ({ char buf[100]; sprintf(buf, "%.1f", (float)3.5); strcmp(buf, "3.5"); }));
 
   ASSERT(0, ({ char buf[100]; fmt(buf, "%.1f", (float)3.5); strcmp(buf, "3.5"); }));
-#endif
 
   ASSERT(5, (add2)(2,3));
   ASSERT(5, (&add2)(2,3));
@@ -308,29 +288,23 @@ int main() {
 
 
   ASSERT(55, add10_int(1,2,3,4,5,6,7,8,9,10));
-#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
   ASSERT(55, add10_float(1,2,3,4,5,6,7,8,9,10));
   ASSERT(55, add10_double(1,2,3,4,5,6,7,8,9,10));
 
   ASSERT(0, ({ char buf[200]; sprintf(buf, "%d %.1f %.1f %.1f %d %d %.1f %d %d %d %d %.1f %d %d %.1f %.1f %.1f %.1f %d", 1, 1.0, 1.0, 1.0, 1, 1, 1.0, 1, 1, 1, 1, 1.0, 1, 1, 1.0, 1.0, 1.0, 1.0, 1); strcmp("1 1.0 1.0 1.0 1 1 1.0 1 1 1 1 1.0 1 1 1.0 1.0 1.0 1.0 1", buf); }));
-#endif
 
   ASSERT(4, many_args1(1,2,3,4,5,6,40,10));
-#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
   ASSERT(4, many_args2(1,2,3,4,5,6,7,8,40,10));
   ASSERT(8, many_args3(1,2,3,4,5,6,7,8,9,10,11,12,13,14,80,10));
-#endif
 
   ASSERT(10, ({ Ty4 x={10,20,30,40}; struct_test4(x, 0); }));
   ASSERT(20, ({ Ty4 x={10,20,30,40}; struct_test4(x, 1); }));
   ASSERT(30, ({ Ty4 x={10,20,30,40}; struct_test4(x, 2); }));
   ASSERT(40, ({ Ty4 x={10,20,30,40}; struct_test4(x, 3); }));
 
-#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
   ASSERT(10, ({ Ty5 x={10,20,30}; struct_test5(x, 0); }));
   ASSERT(20, ({ Ty5 x={10,20,30}; struct_test5(x, 1); }));
   ASSERT(30, ({ Ty5 x={10,20,30}; struct_test5(x, 2); }));
-#endif
 
   ASSERT(10, ({ Ty6 x={10,20,30}; struct_test6(x, 0); }));
   ASSERT(20, ({ Ty6 x={10,20,30}; struct_test6(x, 1); }));
@@ -345,22 +319,18 @@ int main() {
   ASSERT(30, ({ Ty4 x={10,20,30,40}; struct_test14(x, 2); }));
   ASSERT(40, ({ Ty4 x={10,20,30,40}; struct_test14(x, 3); }));
 
-#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
   ASSERT(10, ({ Ty5 x={10,20,30}; struct_test15(x, 0); }));
   ASSERT(20, ({ Ty5 x={10,20,30}; struct_test15(x, 1); }));
   ASSERT(30, ({ Ty5 x={10,20,30}; struct_test15(x, 2); }));
-#endif
 
   ASSERT(10, struct_test24().a);
   ASSERT(20, struct_test24().b);
   ASSERT(30, struct_test24().c);
   ASSERT(40, struct_test24().d);
 
-#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
   ASSERT(10, struct_test25().a);
   ASSERT(20, struct_test25().b);
   ASSERT(30, struct_test25().c);
-#endif
 
   ASSERT(10, struct_test26().a[0]);
   ASSERT(20, struct_test26().a[1]);
@@ -381,11 +351,9 @@ int main() {
   ASSERT(30, struct_test34().c);
   ASSERT(40, struct_test34().d);
 
-#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
   ASSERT(10, struct_test35().a);
   ASSERT(20, struct_test35().b);
   ASSERT(30, struct_test35().c);
-#endif
 
   ASSERT(10, struct_test36().a[0]);
   ASSERT(20, struct_test36().a[1]);
@@ -405,7 +373,6 @@ int main() {
 
   ASSERT(3, inline_fn());
 
-#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
   ASSERT(0, ({ char buf[100]; sprintf(buf, "%Lf", (long double)12.3); strncmp(buf, "12.3", 4); }));
 
   ASSERT(1, to_double(3.5) == 3.5);
@@ -416,7 +383,6 @@ int main() {
 
   ASSERT(1, to_ldouble(5.0) == 5.0);
   ASSERT(0, to_ldouble(5.0) == 5.2);
-#endif
 
   printf("OK\n");
 }

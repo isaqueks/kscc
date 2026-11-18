@@ -135,12 +135,10 @@ int main() {
   ASSERT(5, 0?:5);
   ASSERT(4, ({ int i = 3; ++i?:10; }));
 
-#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
   ASSERT(3, (long double)3);
   ASSERT(5, (long double)3+2);
   ASSERT(6, (long double)3*2);
   ASSERT(5, (long double)3+2.0);
-#endif
 
   printf("OK\n");
   return 0;

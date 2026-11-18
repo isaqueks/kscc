@@ -13,7 +13,6 @@ int sum1(int x, ...) {
   }
 }
 
-#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
 int sum2(int x, ...) {
   va_list ap;
   va_start(ap, x);
@@ -28,7 +27,6 @@ int sum2(int x, ...) {
     x += z;
   }
 }
-#endif
 
 void fmt(char *buf, char *fmt, ...) {
   va_list ap;
@@ -43,11 +41,9 @@ void fmt(char *buf, char *fmt, ...) {
 int main() {
   ASSERT(6, sum1(1, 2, 3, 0));
   ASSERT(55, sum1(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0));
-#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
   ASSERT(21, sum2(1, 2.0, 3, 4.0, 5, 6.0, 0));
   ASSERT(21, sum2(1, 2.0, 3, 4.0, 5, 6.0, 0));
   ASSERT(210, sum2(1, 2.0, 3, 4.0, 5, 6.0, 7, 8.0, 9, 10.0, 11, 12.0, 13, 14.0, 15, 16.0, 17, 18.0, 19, 20.0, 0));
-#endif
   ASSERT(0, ({ char buf[100]; fmt(buf, "%d %d", 2, 3); strcmp(buf, "2 3"); }));
 
   printf("OK\n");

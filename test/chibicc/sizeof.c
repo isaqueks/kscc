@@ -86,21 +86,19 @@ int main() {
   ASSERT(1, sizeof(char) << 31 >> 31);
   ASSERT(1, sizeof(char) << 63 >> 63);
 
-#ifdef KSCC_HAS_FLOAT // kscc: ponto flutuante só na fase 6
   ASSERT(4, sizeof(float));
-  ASSERT(8, sizeof(double));
+  ASSERT(4, sizeof(double)); // kscc: double tem 4 bytes (binary32, doc 02 §1)
 
   ASSERT(4, sizeof(1f+2));
-  ASSERT(8, sizeof(1.0+2));
+  ASSERT(4, sizeof(1.0+2)); // kscc: double tem 4 bytes (binary32, doc 02 §1)
   ASSERT(4, sizeof(1f-2));
-  ASSERT(8, sizeof(1.0-2));
+  ASSERT(4, sizeof(1.0-2)); // kscc: double tem 4 bytes (binary32, doc 02 §1)
   ASSERT(4, sizeof(1f*2));
-  ASSERT(8, sizeof(1.0*2));
+  ASSERT(4, sizeof(1.0*2)); // kscc: double tem 4 bytes (binary32, doc 02 §1)
   ASSERT(4, sizeof(1f/2));
-  ASSERT(8, sizeof(1.0/2));
+  ASSERT(4, sizeof(1.0/2)); // kscc: double tem 4 bytes (binary32, doc 02 §1)
 
-  ASSERT(16, sizeof(long double));
-#endif
+  ASSERT(4, sizeof(long double)); // kscc: long double tem 4 bytes (binary32, doc 02 §1)
 
   ASSERT(1, sizeof(main));
 

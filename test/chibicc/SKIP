@@ -2,8 +2,7 @@
 # Formato: arquivo  fase-prevista  motivo
 # O harness (test/run.sh) pula os arquivos listados e mostra a contagem.
 # Trechos de arquivos ativos que dependem de long long ou ponto flutuante
-# ficam atrás de KSCC_HAS_LL / KSCC_HAS_FLOAT.
+# ficam atrás de KSCC_HAS_LL (ponto flutuante está ativo desde a fase 6).
 asm.c          fase-7  asm inline (erro explícito na v1)
 atomic.c       fora    _Atomic não suportado na v1
-float.c        fase-6  ponto flutuante
 tls.c          fora    _Thread_local não suportado na v1

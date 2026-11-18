@@ -2297,12 +2297,30 @@ int64_t const_expr(Token **rest, Token *tok) {
 
 // kscc: expressão de #if. O C manda avaliar em intmax_t/uintmax_t, então
 // aqui não há redução a 32 bits e constantes de 64 bits são aceitas.
+// kscc: um operando de ponto flutuante em qualquer ponto da expressão de
+// #if (C11 6.10.1p1: expressão constante inteira, sem constantes de ponto
+// flutuante); `#if 1.5 > 1` e `#if !0.0` têm tipo int no topo.
+static Node *find_flonum(Node *node) {
+  if (!node)
+    return NULL;
+  if (node->ty && is_flonum(node->ty))
+    return node;
+  Node *kids[] = {node->lhs, node->rhs, node->cond, node->then, node->els};
+  for (int i = 0; i < 5; i++) {
+    Node *n = find_flonum(kids[i]);
+    if (n)
+      return n;
+  }
+  return NULL;
+}
+
 int64_t pp_const_expr(Token **rest, Token *tok) {
   pp_mode = true;
   Node *node = conditional(rest, tok);
   add_type(node);
-  if (is_flonum(node->ty))
-    error_tok(node->tok, "ponto flutuante em expressao de #if");
+  Node *fl = find_flonum(node);
+  if (fl)
+    error_tok(fl->tok, "ponto flutuante em expressao de #if");
   int64_t val = eval(node);
   pp_mode = false;
   return val;

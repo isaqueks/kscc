@@ -26,6 +26,11 @@
 
 static FILE *output_file;
 static int depth;
+
+// kscc: a unidade passa float/double como argumento anônimo de uma função
+// variádica (printf("%f", x)): pede ao link a conversão de ponto flutuante
+// do printf (src/link.c, referência fraca __ks_weak_printf_float).
+static bool uses_float_varargs;
 static char *argreg[] = {"r1", "r2", "r3", "r4"};
 static Obj *current_fn;
 
@@ -859,6 +864,16 @@ static void gen_expr(Node *node) {
       return;
     }
 
+    if (node->func_ty->is_variadic) {
+      int nparams = 0;
+      for (Type *t = node->func_ty->params; t; t = t->next)
+        nparams++;
+      int i = 0;
+      for (Node *arg = node->args; arg; arg = arg->next, i++)
+        if (i >= nparams && is_flonum(arg->ty))
+          uses_float_varargs = true;
+    }
+
     int stack_args = push_args(node);
 
     // kscc: chamada direta quando o alvo é uma função com nome; senão o
@@ -1684,6 +1699,9 @@ void codegen(Obj *prog, FILE *out) {
   assign_lvar_offsets(prog);
   emit_data(prog);
   emit_text(prog);
+
+  if (uses_float_varargs)
+    println("; kscc-need: __ks_weak_printf_float");
 
   // kscc: termina em .text, estado neutro para a concatenação (doc 04 §3).
   println("  .text");

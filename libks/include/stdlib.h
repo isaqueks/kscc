@@ -32,6 +32,13 @@ long atol(const char *s);
 long strtol(const char *restrict s, char **restrict end, int base);
 unsigned long strtoul(const char *restrict s, char **restrict end, int base);
 
+// float, double e long double são binary32 (doc 02 §1): as quatro são a
+// mesma conversão, corretamente arredondada (libks/src/strtof.c).
+float strtof(const char *restrict s, char **restrict end);
+double strtod(const char *restrict s, char **restrict end);
+long double strtold(const char *restrict s, char **restrict end);
+double atof(const char *s);
+
 int rand(void);
 void srand(unsigned seed);
 

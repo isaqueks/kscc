@@ -251,6 +251,13 @@ struct Common {
 };
 
 #define COMMON_MARK "; kscc-common:"
+#define NEED_MARK "; kscc-need:"
+#define WEAK_PREFIX "__ks_weak_"
+
+static bool is_weak_name(char *name, int len) {
+  int n = strlen(WEAK_PREFIX);
+  return len > n && !strncmp(name, WEAK_PREFIX, n);
+}
 
 // Nome do label definido na linha (`nome:` no começo, depois de
 // espaços), ou NULL.
@@ -368,6 +375,15 @@ static char *resolve_commons(char **texts, int ntexts) {
 //  4. Um bloco de .text cuja última instrução não é ret/jmp/halt/trap/b
 //     "cai" no bloco seguinte, que entra junto (assembly escrito à mão;
 //     o codegen sempre termina funções em ret).
+//  5. Referência fraca: um símbolo comum da libks cujo nome começa com
+//     __ks_weak_ (definição provisória numa unidade, inicializada em
+//     outra) resolve para o marcador comum, que vira um .bss zerado, a
+//     menos que uma raiz peça a definição com a linha
+//         ; kscc-need: __ks_weak_nome
+//     que o codegen emite (é comentário para o ksas). Com a definição
+//     incluída, o símbolo comum some (resolve_commons). É assim que o
+//     printf só liga a conversão de ponto flutuante (~18 KB) quando alguma
+//     unidade passa float/double a uma função variádica.
 //
 // Identificadores são achados por varredura léxica, ignorando comentários
 // e strings; um falso positivo (um registrador com o nome de uma função,
@@ -528,8 +544,8 @@ static void pending_flush(Pending *pd, Block *b) {
 }
 
 // Bloco de um marcador de símbolo comum.
-static Block *common_block(BlockArray *blocks, HashMap *defs, char *line,
-                           char *end, char *section) {
+static Block *common_block(BlockArray *blocks, HashMap *defs, HashMap *weak,
+                           char *line, char *end, char *section) {
   int mlen = strlen(COMMON_MARK);
   char *name = skip_space(line + mlen, end);
   char *e = name;
@@ -539,13 +555,13 @@ static Block *common_block(BlockArray *blocks, HashMap *defs, char *line,
     error("marcador de simbolo comum invalido: %.*s", (int)(end - line), line);
 
   Block *b = new_block(blocks, name, e - name, section);
-  hashmap_put2(defs, b->name, b->name_len, b);
+  hashmap_put2(is_weak_name(b->name, b->name_len) ? weak : defs, b->name, b->name_len, b);
   return b;
 }
 
 // Corta libks.kso em blocos (passo 1 acima). O primeiro bloco é o
 // preâmbulo (o que vem antes do primeiro label), sempre incluído.
-static void split_blocks(char *text, BlockArray *blocks, HashMap *defs) {
+static void split_blocks(char *text, BlockArray *blocks, HashMap *defs, HashMap *weak) {
   char *section = ".text";
   Block *cur = new_block(blocks, NULL, 0, NULL);
   cur->used = true;
@@ -566,7 +582,7 @@ static void split_blocks(char *text, BlockArray *blocks, HashMap *defs) {
     bool in_text = !strcmp(section, ".text");
 
     if (!strncmp(p, COMMON_MARK, mlen)) {
-      cur = common_block(blocks, defs, p, end, section);
+      cur = common_block(blocks, defs, weak, p, end, section);
       pending_flush(&pd, cur);
       fprintf(cur->out, "%.*s\n", (int)(end - p), p);
     } else if (wlen == 0 && !label) {
@@ -611,6 +627,7 @@ static bool falls_through(Block *b) {
 typedef struct {
   HashMap user_defs;  // labels e símbolos comuns definidos pelas raízes
   HashMap lib_defs;   // nome -> Block da libks
+  HashMap lib_weak;   // nome -> marcador comum __ks_weak_* da libks (passo 5)
   BlockArray work;    // blocos marcados cujas referências faltam seguir
 } GcContext;
 
@@ -625,9 +642,36 @@ static void use_name(void *ctx, char *name, int len) {
   GcContext *gc = ctx;
   if (hashmap_get2(&gc->user_defs, name, len))
     return;
-  Block *b = hashmap_get2(&gc->lib_defs, name, len);
+  Block *b = NULL;
+  if (is_weak_name(name, len))
+    b = hashmap_get2(&gc->lib_weak, name, len);
+  if (!b)
+    b = hashmap_get2(&gc->lib_defs, name, len);
   if (b)
     mark_block(gc, b);
+}
+
+// Linhas "; kscc-need: nome" de uma raiz: puxam a definição de verdade de
+// um símbolo fraco (passo 5).
+static void use_needs(GcContext *gc, char *text) {
+  int mlen = strlen(NEED_MARK);
+  for (char *p = text; *p;) {
+    char *end = strchr(p, '\n');
+    if (!end)
+      end = p + strlen(p);
+
+    if (!strncmp(p, NEED_MARK, mlen)) {
+      char *q = skip_space(p + mlen, end);
+      char *e = q;
+      while (e < end && is_ident_char((unsigned char)*e))
+        e++;
+      Block *b = hashmap_get2(&gc->lib_defs, q, e - q);
+      if (b && !hashmap_get2(&gc->user_defs, q, e - q))
+        mark_block(gc, b);
+    }
+
+    p = *end ? end + 1 : end;
+  }
 }
 
 static void collect_user_defs(char *text, HashMap *defs) {
@@ -657,12 +701,14 @@ static void collect_user_defs(char *text, HashMap *defs) {
 static char *select_used(char *lib, char **roots, int nroots) {
   GcContext gc = {0};
   BlockArray blocks = {0};
-  split_blocks(lib, &blocks, &gc.lib_defs);
+  split_blocks(lib, &blocks, &gc.lib_defs, &gc.lib_weak);
 
   for (int i = 0; i < nroots; i++)
     collect_user_defs(roots[i], &gc.user_defs);
-  for (int i = 0; i < nroots; i++)
+  for (int i = 0; i < nroots; i++) {
+    use_needs(&gc, roots[i]);
     scan_refs(roots[i], use_name, &gc);
+  }
 
   while (gc.work.len > 0) {
     Block *b = gc.work.data[--gc.work.len];

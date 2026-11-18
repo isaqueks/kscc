@@ -9,7 +9,9 @@
 //
 // printf e família: %d %i %u %x %X %o %c %s %p %n %%, flags - 0 + espaço
 // e #, largura e precisão (inclusive *), modificadores hh h l z t j (todos
-// de 32 bits). %lld e %f/%e/%g/%a imprimem "<?>" até as fases 5 e 6.
+// de 32 bits). %f %F %e %E %g %G %a %A (também com L): conversão exata do
+// binary32, arredondada como no glibc (doc 05 §2). %lld imprime "<?>" até
+// a fase 5.
 #ifndef __STDIO_H
 #define __STDIO_H
 

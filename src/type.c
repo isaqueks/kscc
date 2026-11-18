@@ -19,9 +19,14 @@ Type *ty_ulong = &(Type){.kind = TY_LONG, .size = 4, .align = 4, .is_unsigned = 
 Type *ty_llong = &(Type){.kind = TY_LONG, .size = 8, .align = 4};
 Type *ty_ullong = &(Type){.kind = TY_LONG, .size = 8, .align = 4, .is_unsigned = true};
 
+// kscc: a KSVM só tem binary32 (extensão F, doc 04 §5.7 da ksvm2), então
+// float, double e long double têm todos 4 bytes, alinhamento 4 e a mesma
+// representação (divergência deliberada da norma, como o -fshort-double do
+// avr-gcc antigo; doc 02 §1). Os três kinds continuam distintos para a
+// semântica da linguagem (_Generic, compatibilidade de tipos, promoções).
 Type *ty_float = &(Type){.kind = TY_FLOAT, .size = 4, .align = 4};
-Type *ty_double = &(Type){.kind = TY_DOUBLE, .size = 8, .align = 8};
-Type *ty_ldouble = &(Type){.kind = TY_LDOUBLE, .size = 16, .align = 16};
+Type *ty_double = &(Type){.kind = TY_DOUBLE, .size = 4, .align = 4};
+Type *ty_ldouble = &(Type){.kind = TY_LDOUBLE, .size = 4, .align = 4};
 
 static Type *new_type(TypeKind kind, int size, int align) {
   Type *ty = calloc(1, sizeof(Type));
@@ -243,6 +248,11 @@ void add_type(Node *node) {
   case ND_BITXOR:
     usual_arith_conv(&node->lhs, &node->rhs);
     node->ty = node->lhs->ty;
+    // kscc: % e os operadores de bits exigem inteiros (C11 6.5.5p2,
+    // 6.5.10-12); o chibicc só acusava no codegen.
+    if (node->kind != ND_ADD && node->kind != ND_SUB && node->kind != ND_MUL &&
+        node->kind != ND_DIV && is_flonum(node->ty))
+      error_tok(node->tok, "operando de ponto flutuante invalido para este operador");
     return;
   case ND_NEG: {
     node->lhs = promote_bitfield(node->lhs);
@@ -280,6 +290,8 @@ void add_type(Node *node) {
     // chibicc omitia. Com valores reduzidos ao tipo (eval e casts),
     // `(char)1 << 10` precisa ter tipo int.
     node->lhs = promote_bitfield(node->lhs);
+    if (is_flonum(node->lhs->ty) || (node->rhs && is_flonum(node->rhs->ty)))
+      error_tok(node->tok, "operando de ponto flutuante invalido para este operador");
     if (is_integer(node->lhs->ty) && node->lhs->ty->size < 4)
       node->lhs = new_cast(node->lhs, ty_int);
     node->ty = node->lhs->ty;

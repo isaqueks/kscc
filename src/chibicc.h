@@ -234,6 +234,7 @@ typedef enum {
   ND_ASM,       // "asm"
   ND_CAS,       // Atomic compare-and-swap
   ND_EXCH,      // Atomic exchange
+  ND_FBUILTIN,  // kscc: __builtin_sqrtf etc., uma instrução F (Node::fop)
 } NodeKind;
 
 // AST node type
@@ -301,8 +302,14 @@ struct Node {
   Obj *var;
 
   // Numeric literal
+  // kscc: fval de um literal de ponto flutuante é sempre um valor binary32
+  // exato (o tokenizer lê com strtof; doc 02 §1).
   int64_t val;
   long double fval;
+
+  // kscc: ND_FBUILTIN: mnemônico da instrução F (fsqrt, fmin, ...) ou um
+  // dos testes isnan/isinf/isfinite/signbit; lhs (e rhs, nos binários).
+  char *fop;
 };
 
 Node *new_cast(Node *expr, Type *ty);

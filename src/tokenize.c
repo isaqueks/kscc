@@ -437,8 +437,14 @@ static void convert_pp_number(Token *tok) {
     return;
 
   // If it's not an integer, it must be a floating point constant.
+  //
+  // kscc: float, double e long double são todos binary32 (doc 02 §1): o
+  // literal é convertido direto do decimal para float por strtof (um único
+  // arredondamento, RNE), como o gcc -fsingle-precision-constant. Passar
+  // por double arredondaria duas vezes e erraria o último bit em casos
+  // raros. Fora do alcance vira ±inf (o gcc avisa e faz o mesmo).
   char *end;
-  long double val = strtold(tok->loc, &end);
+  long double val = strtof(tok->loc, &end);
 
   Type *ty;
   if (*end == 'f' || *end == 'F') {

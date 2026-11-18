@@ -1061,8 +1061,9 @@ void init_macros(void) {
   // Define predefined macros
   //
   // kscc: macros do doc 04 §4. Saem as de x86-64/Linux/LP64 (__x86_64__,
-  // __linux__, __LP64__, __ELF__, unix...); __SIZEOF_LONG_LONG__,
-  // __SIZEOF_FLOAT__ e __SIZEOF_DOUBLE__ entram com as fases 5 e 6.
+  // __linux__, __LP64__, __ELF__, unix...); __SIZEOF_LONG_LONG__ entra com
+  // a fase 5. float, double e long double são binary32 de 4 bytes (doc 02
+  // §1); __STDC_IEC_559__ não é definida (double não é binary64).
   define_macro("__ksvm__", "1");
   define_macro("__ksvm_isa__", "0x0200");
   define_macro("__kscc__", "1");
@@ -1075,6 +1076,11 @@ void init_macros(void) {
   define_macro("__SIZEOF_POINTER__", "4");
   define_macro("__SIZEOF_PTRDIFF_T__", "4");
   define_macro("__SIZEOF_SHORT__", "2");
+  define_macro("__SIZEOF_FLOAT__", "4");
+  define_macro("__SIZEOF_DOUBLE__", "4");
+  define_macro("__SIZEOF_LONG_DOUBLE__", "4");
+  define_macro("__FLT_EVAL_METHOD__", "0");
+  define_macro("__kscc_float__", "1");
   define_macro("__SIZEOF_SIZE_T__", "4");
   define_macro("__SIZE_TYPE__", "unsigned int");
   define_macro("__PTRDIFF_TYPE__", "int");

@@ -11,13 +11,17 @@
 //  - push()/pop() empilham 32 bits; `depth` conta as palavras empilhadas.
 //  - binários: gen_expr(rhs); push; gen_expr(lhs); pop r2 -> r1 op r2.
 //
+// Ponto flutuante (fase 6): float, double e long double são binary32 nos
+// registradores inteiros, operados pelas instruções da extensão F da VM
+// (doc 03 §1, float). Valor em r1 como qualquer escalar de 32 bits.
+//
 // Não suportado nesta versão (erro de compilação, nunca código errado):
-// ponto flutuante, long long, TLS, atômicos e asm.
+// long long, TLS, atômicos e asm.
 
 #include "chibicc.h"
 
-// kscc: quatro registradores de argumento (doc 02 §3), sem classe de ponto
-// flutuante.
+// kscc: quatro registradores de argumento (doc 02 §3). Sem classe de ponto
+// flutuante: um float passa como um int de 32 bits.
 #define GP_MAX 4
 
 static FILE *output_file;
@@ -160,8 +164,6 @@ static void check_type(Node *node) {
   Type *ty = node->ty;
   if (!ty)
     return;
-  if (is_flonum(ty))
-    error_tok(node->tok, "ponto flutuante nao suportado nesta versao do kscc");
   if (is_integer(ty) && ty->size > 4)
     error_tok(node->tok, "long long nao suportado nesta versao do kscc");
 }
@@ -260,12 +262,9 @@ static void load(Type *ty) {
     // This is where "array is automatically converted to a pointer to
     // the first element of the array in C" occurs.
     return;
-  case TY_FLOAT:
-  case TY_DOUBLE:
-  case TY_LDOUBLE:
-    unreachable();
   }
 
+  // kscc: float/double/long double têm 4 bytes (ldw/stw, como int).
   // kscc: os loads da KSVM já estendem para 32 bits (ldbs/ldhs com sinal,
   // ldb/ldh com zero), mantendo o invariante de que r1 está sempre
   // completo.
@@ -331,10 +330,6 @@ static void store(Type *ty) {
     copy_bytes("r1", "r2", ty->size);
     println("  mov r1, r6");
     return;
-  case TY_FLOAT:
-  case TY_DOUBLE:
-  case TY_LDOUBLE:
-    unreachable();
   }
 
   if (ty->size == 1)
@@ -349,9 +344,16 @@ static void store(Type *ty) {
 
 // kscc: `cmp r1, zr` deixa Z = (r1 == 0). Como r1 está sempre estendido a
 // 32 bits, não há distinção de tamanho (o chibicc escolhia eax/rax).
+//
+// Ponto flutuante: `fcmp r1, zr` (zr são os bits de +0.0). Z = 1 só para
+// ±0 (igual), então beq/bne dão o `== 0` do C: -0 é falso, NaN
+// (unordered, Z = 0) é verdadeiro. Todos os usuários de cmp_zero desviam
+// por Z (beq/bne/set_cond eq/ne).
 static void cmp_zero(Type *ty) {
-  if (is_flonum(ty))
-    unreachable();
+  if (is_flonum(ty)) {
+    println("  fcmp r1, zr");
+    return;
+  }
   println("  cmp r1, zr");
 }
 
@@ -365,9 +367,9 @@ static void set_cond(char *cc) {
   println("%s.set.%d:", L, c);
 }
 
-// kscc: só as classes inteiras de até 32 bits (doc 03, cast). Ponteiros e
-// enums são U32/I32.
-enum { I8, I16, I32, U8, U16, U32 };
+// kscc: as classes inteiras de até 32 bits mais F32 (float, double e long
+// double, todos binary32; doc 03, cast). Ponteiros e enums são U32/I32.
+enum { I8, I16, I32, U8, U16, U32, F32 };
 
 static int getTypeId(Type *ty) {
   switch (ty->kind) {
@@ -381,6 +383,10 @@ static int getTypeId(Type *ty) {
   case TY_LONG:
   case TY_ENUM:
     return ty->is_unsigned ? U32 : I32;
+  case TY_FLOAT:
+  case TY_DOUBLE:
+  case TY_LDOUBLE:
+    return F32;
   }
   return U32;
 }
@@ -391,14 +397,30 @@ static char i32u8[] = "zxb r1, r1";
 static char i32i16[] = "sxh r1, r1";
 static char i32u16[] = "zxh r1, r1";
 
-static char *cast_table[][6] = {
-  // i8   i16     i32   u8     u16     u32
-  {NULL,  NULL,   NULL, i32u8, i32u16, NULL}, // i8
-  {i32i8, NULL,   NULL, i32u8, i32u16, NULL}, // i16
-  {i32i8, i32i16, NULL, i32u8, i32u16, NULL}, // i32
-  {i32i8, NULL,   NULL, NULL,  NULL,   NULL}, // u8
-  {i32i8, i32i16, NULL, i32u8, NULL,   NULL}, // u16
-  {i32i8, i32i16, NULL, i32u8, i32u16, NULL}, // u32
+// kscc: inteiro -> float: ITOF (com sinal, que serve para todos os
+// valores já estendidos a 32 bits) ou UTOF (unsigned de 32 bits). float ->
+// inteiro: FTOU para unsigned de 32 bits; FTOI para os demais, reduzido a
+// char/short depois como numa conversão int -> char (o mesmo que o gcc faz
+// com cvttss2si). Ambas truncam para zero e saturam; NaN dá 0 (fora do
+// alcance é UB em C; o resultado da VM é definido e igual em todo host).
+static char i32f32[] = "itof r1, r1";
+static char u32f32[] = "utof r1, r1";
+static char f32i8[] = "ftoi r1, r1\n  sxb r1, r1";
+static char f32u8[] = "ftoi r1, r1\n  zxb r1, r1";
+static char f32i16[] = "ftoi r1, r1\n  sxh r1, r1";
+static char f32u16[] = "ftoi r1, r1\n  zxh r1, r1";
+static char f32i32[] = "ftoi r1, r1";
+static char f32u32[] = "ftou r1, r1";
+
+static char *cast_table[][7] = {
+  // i8   i16     i32     u8     u16     u32     f32
+  {NULL,  NULL,   NULL,   i32u8, i32u16, NULL,   i32f32}, // i8
+  {i32i8, NULL,   NULL,   i32u8, i32u16, NULL,   i32f32}, // i16
+  {i32i8, i32i16, NULL,   i32u8, i32u16, NULL,   i32f32}, // i32
+  {i32i8, NULL,   NULL,   NULL,  NULL,   NULL,   i32f32}, // u8
+  {i32i8, i32i16, NULL,   i32u8, NULL,   NULL,   i32f32}, // u16
+  {i32i8, i32i16, NULL,   i32u8, i32u16, NULL,   u32f32}, // u32
+  {f32i8, f32i16, f32i32, f32u8, f32u16, f32u32, NULL},   // f32
 };
 
 static void cast(Type *from, Type *to) {
@@ -618,6 +640,40 @@ static bool is_alloca_call(Node *node) {
           !strcmp(node->lhs->var->name, "__builtin_alloca"));
 }
 
+// kscc: __builtin_sqrtf e família (parse.c, float_builtin): uma instrução
+// F, sem chamada. Os testes de classificação olham o binary32:
+//   isnan:    FCMP x, x é unordered só para NaN (bvs)
+//   isinf:    |x| == +inf
+//   isfinite: |x| < +inf (NaN: unordered, falso)
+//   signbit:  bit 31 (também em -0 e em NaN com sinal)
+static void gen_fbuiltin(Node *node) {
+  char *op = node->fop;
+
+  if (node->rhs) {
+    gen_expr(node->rhs);
+    push();
+    gen_expr(node->lhs);
+    pop("r2");
+    println("  %s r1, r1, r2", op);
+    return;
+  }
+
+  gen_expr(node->lhs);
+  if (!strcmp(op, "isnan")) {
+    println("  fcmp r1, r1");
+    set_cond("vs");
+  } else if (!strcmp(op, "isinf") || !strcmp(op, "isfinite")) {
+    println("  fabs r1, r1");
+    println("  li r2, %d ; inf", 0x7F800000);
+    println("  fcmp r1, r2");
+    set_cond(!strcmp(op, "isinf") ? "eq" : "mi");
+  } else if (!strcmp(op, "signbit")) {
+    println("  shri r1, r1, 31");
+  } else {
+    println("  %s r1, r1", op);
+  }
+}
+
 // Generate code for a given node.
 static void gen_expr(Node *node) {
   emit_loc(node->tok);
@@ -627,13 +683,23 @@ static void gen_expr(Node *node) {
   case ND_NULL_EXPR:
     return;
   case ND_NUM:
+    // kscc: ponto flutuante: os bits do binary32, calculados no host (sem
+    // depender do leitor de literais do ksas; `fli` seria o mesmo MOVIL).
+    if (is_flonum(node->ty)) {
+      float f = (float)node->fval;
+      uint32_t bits;
+      memcpy(&bits, &f, 4);
+      println("  li r1, %d ; %.9g", (int32_t)bits, f);
+      return;
+    }
     // kscc: `li` é pseudo do ksas: MOVI se cabe em 14 bits, senão MOVIL.
     // O valor é reduzido a 32 bits (Node::val é int64_t).
     println("  li r1, %d", (int32_t)(uint32_t)node->val);
     return;
   case ND_NEG:
     gen_expr(node->lhs);
-    println("  neg r1, r1");
+    // kscc: FNEG só troca o sinal (-0.0 a partir de 0.0, como o gcc).
+    println("  %s r1, r1", is_flonum(node->ty) ? "fneg" : "neg");
     return;
   case ND_VAR:
     gen_addr(node);
@@ -858,12 +924,54 @@ static void gen_expr(Node *node) {
   case ND_CAS:
   case ND_EXCH:
     error_tok(node->tok, "atomicos nao suportados nesta versao do kscc");
+  case ND_FBUILTIN:
+    gen_fbuiltin(node);
+    return;
   }
 
   gen_expr(node->rhs);
   push();
   gen_expr(node->lhs);
   pop("r2");
+
+  // kscc: ponto flutuante (o parser converteu os dois lados para o mesmo
+  // tipo): as quatro operações da extensão F e FCMP. FCMP segue o ARM VFP
+  // (doc 04 §5.7 da ksvm2): == beq, != bne (verdadeiro com NaN), < bmi,
+  // <= bls (falsos com NaN). `a > b` e `a >= b` chegam como `b < a` e
+  // `b <= a` (o parser troca os lados), então também são falsos com NaN.
+  // % e operadores de bits com float são erro em add_type.
+  if (is_flonum(node->lhs->ty)) {
+    switch (node->kind) {
+    case ND_ADD:
+      println("  fadd r1, r1, r2");
+      return;
+    case ND_SUB:
+      println("  fsub r1, r1, r2");
+      return;
+    case ND_MUL:
+      println("  fmul r1, r1, r2");
+      return;
+    case ND_DIV:
+      // x / ±0 = ±inf (0/0 = NaN), sem fault.
+      println("  fdiv r1, r1, r2");
+      return;
+    case ND_EQ:
+    case ND_NE:
+    case ND_LT:
+    case ND_LE:
+      println("  fcmp r1, r2");
+      if (node->kind == ND_EQ)
+        set_cond("eq");
+      else if (node->kind == ND_NE)
+        set_cond("ne");
+      else if (node->kind == ND_LT)
+        set_cond("mi");
+      else
+        set_cond("ls");
+      return;
+    }
+    error_tok(node->tok, "invalid expression");
+  }
 
   // kscc: tudo em 32 bits; não há a escolha eax/rax do chibicc.
   switch (node->kind) {
@@ -1400,7 +1508,7 @@ static void emit_text(Obj *prog) {
       continue;
 
     Type *rty = fn->ty->return_ty;
-    if (is_flonum(rty) || (is_integer(rty) && rty->size > 4))
+    if (is_integer(rty) && rty->size > 4)
       error_tok(fn->ty->name, "tipo de retorno nao suportado nesta versao do kscc");
 
     fputc('\n', output_file);
@@ -1437,7 +1545,7 @@ static void emit_text(Obj *prog) {
         continue;
 
       Type *ty = var->ty;
-      if (is_flonum(ty) || ty->size > 4)
+      if (ty->size > 4)
         error_tok(fn->ty->name, "tipo de parametro nao suportado nesta versao do kscc");
       store_gp(gp++, var->offset, ty->size);
     }

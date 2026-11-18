@@ -139,7 +139,9 @@ static int64_t eval_rval(Node *node, char ***label);
 static bool is_const_expr(Node *node);
 static Node *assign(Token **rest, Token *tok);
 static Node *logor(Token **rest, Token *tok);
-static double eval_double(Node *node);
+static float eval_double(Node *node);
+static int64_t float_to_int(Type *ty, float f);
+static bool eval_truth(Node *node);
 static Node *conditional(Token **rest, Token *tok);
 static Node *logand(Token **rest, Token *tok);
 static Node *bitor(Token **rest, Token *tok);
@@ -576,8 +578,8 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
     case UNSIGNED + LONG + INT:
       ty = ty_ulong;
       break;
-    // kscc: long long (64 bits) entra na fase 5 e ponto flutuante na fase 6
-    // (doc 07). Até lá, erro explícito em vez de código errado.
+    // kscc: long long (64 bits) entra na fase 5 (doc 07). Até lá, erro
+    // explícito em vez de código errado.
     case LONG + LONG:
     case LONG + LONG + INT:
     case SIGNED + LONG + LONG:
@@ -585,11 +587,16 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
     case UNSIGNED + LONG + LONG:
     case UNSIGNED + LONG + LONG + INT:
       error_tok(tok, "long long nao suportado nesta versao do kscc");
+    // kscc: os três são binary32 de 4 bytes (doc 02 §1, ver type.c).
     case FLOAT:
+      ty = ty_float;
+      break;
     case DOUBLE:
+      ty = ty_double;
+      break;
     case LONG + DOUBLE:
-      error_tok(tok, "ponto flutuante (%.*s) nao suportado nesta versao do kscc",
-                tok->len, tok->loc);
+      ty = ty_ldouble;
+      break;
     default:
       error_tok(tok, "invalid type");
     }
@@ -687,6 +694,11 @@ static Type *array_dimensions(Token **rest, Token *tok, Type *ty) {
   Node *expr = conditional(&tok, tok);
   tok = skip(tok, "]");
   ty = type_suffix(rest, tok, ty);
+
+  // kscc: `int a[2.5]` (ou um VLA de tamanho float) é erro (C11 6.7.6.2p1).
+  add_type(expr);
+  if (is_flonum(expr->ty))
+    error_tok(expr->tok, "size of array has non-integer type");
 
   if (ty->kind == TY_VLA || !is_const_expr(expr))
     return vla_of(ty, expr);
@@ -1590,13 +1602,23 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
   if (!init->expr)
     return cur;
 
-  if (ty->kind == TY_FLOAT) {
-    *(float *)(buf + offset) = eval_double(init->expr);
+  // kscc: float, double e long double: os 4 bytes do binary32 (o host e o
+  // alvo são little-endian).
+  if (is_flonum(ty)) {
+    float f = eval_double(init->expr);
+    memcpy(buf + offset, &f, 4);
     return cur;
   }
 
-  if (ty->kind == TY_DOUBLE) {
-    *(double *)(buf + offset) = eval_double(init->expr);
+  // kscc: valor de ponto flutuante num objeto inteiro: a conversão é a da
+  // VM (ver float_to_int), não a do host.
+  add_type(init->expr);
+  if (is_flonum(init->expr->ty)) {
+    float f = eval_double(init->expr);
+    if (ty->kind == TY_BOOL)
+      write_buf(buf + offset, f != 0, 1);
+    else
+      write_buf(buf + offset, float_to_int(ty, f), ty->size);
     return cur;
   }
 
@@ -1730,6 +1752,11 @@ static Node *stmt(Token **rest, Token *tok) {
     Node *node = new_node(ND_SWITCH, tok);
     tok = skip(tok->next, "(");
     node->cond = expr(&tok, tok);
+    // kscc: a expressão de controle tem de ser inteira (C11 6.8.4.2p1);
+    // com float o codegen comparava os bits com os valores dos case.
+    add_type(node->cond);
+    if (!is_integer(node->cond->ty))
+      error_tok(node->cond->tok, "switch quantity not an integer");
     tok = skip(tok, ")");
 
     Node *sw = current_switch;
@@ -2065,7 +2092,21 @@ static int64_t eval2(Node *node, char ***label) {
 // overflow (bem definido no alvo depois de wrap_to_type) não seja UB no host.
 static int64_t eval2_raw(Node *node, char ***label) {
   if (is_flonum(node->ty))
-    return eval_double(node);
+    return float_to_int(ty_int, eval_double(node));
+
+  // kscc: comparações entre floats comparam os valores de ponto flutuante
+  // (com NaN: só != é verdadeiro), não os inteiros truncados.
+  if ((node->kind == ND_EQ || node->kind == ND_NE || node->kind == ND_LT ||
+       node->kind == ND_LE) && is_flonum(node->lhs->ty)) {
+    float l = eval_double(node->lhs);
+    float r = eval_double(node->rhs);
+    switch (node->kind) {
+    case ND_EQ: return l == r;
+    case ND_NE: return l != r;
+    case ND_LT: return l < r;
+    default:    return l <= r;
+    }
+  }
 
   switch (node->kind) {
   case ND_ADD:
@@ -2112,18 +2153,26 @@ static int64_t eval2_raw(Node *node, char ***label) {
       return (uint64_t)eval(node->lhs) <= (uint64_t)eval(node->rhs);
     return eval(node->lhs) <= eval(node->rhs);
   case ND_COND:
-    return eval(node->cond) ? eval2(node->then, label) : eval2(node->els, label);
+    return eval_truth(node->cond) ? eval2(node->then, label) : eval2(node->els, label);
   case ND_COMMA:
     return eval2(node->rhs, label);
   case ND_NOT:
-    return !eval(node->lhs);
+    return !eval_truth(node->lhs);
   case ND_BITNOT:
     return ~eval(node->lhs);
   case ND_LOGAND:
-    return eval(node->lhs) && eval(node->rhs);
+    return eval_truth(node->lhs) && eval_truth(node->rhs);
   case ND_LOGOR:
-    return eval(node->lhs) || eval(node->rhs);
+    return eval_truth(node->lhs) || eval_truth(node->rhs);
   case ND_CAST:
+    // kscc: de ponto flutuante para inteiro, a conversão da VM (FTOI/FTOU,
+    // com saturação; float_to_int); para _Bool, `!= 0` (NaN é verdadeiro).
+    if (is_flonum(node->lhs->ty)) {
+      float f = eval_double(node->lhs);
+      if (node->ty->kind == TY_BOOL)
+        return f != 0;
+      return float_to_int(node->ty, f);
+    }
     // kscc: a conversão para o tipo destino (inclusive para _Bool, que o
     // chibicc tratava como char) é feita por wrap_to_type em eval2.
     return eval2(node->lhs, label);
@@ -2201,7 +2250,7 @@ static bool is_const_expr(Node *node) {
   case ND_COND:
     if (!is_const_expr(node->cond))
       return false;
-    return is_const_expr(eval(node->cond) ? node->then : node->els);
+    return is_const_expr(eval_truth(node->cond) ? node->then : node->els);
   case ND_COMMA:
     return is_const_expr(node->rhs);
   case ND_NEG:
@@ -2216,8 +2265,18 @@ static bool is_const_expr(Node *node) {
   return false;
 }
 
+// kscc: uma expressão constante inteira (C11 6.6p6) só admite ponto
+// flutuante como operando imediato de um cast: `case 1.5:` e `int a[2.5]`
+// são erro (o chibicc truncava).
+static void check_integer_const(Node *node) {
+  add_type(node);
+  if (!is_integer(node->ty))
+    error_tok(node->tok, "expressao constante inteira esperada");
+}
+
 int64_t const_expr(Token **rest, Token *tok) {
   Node *node = conditional(rest, tok);
+  check_integer_const(node);
   return eval(node);
 }
 
@@ -2226,41 +2285,83 @@ int64_t const_expr(Token **rest, Token *tok) {
 int64_t pp_const_expr(Token **rest, Token *tok) {
   pp_mode = true;
   Node *node = conditional(rest, tok);
+  add_type(node);
+  if (is_flonum(node->ty))
+    error_tok(node->tok, "ponto flutuante em expressao de #if");
   int64_t val = eval(node);
   pp_mode = false;
   return val;
 }
 
-static double eval_double(Node *node) {
+// kscc: conversão de ponto flutuante para inteiro em tempo de compilação,
+// com o mesmo resultado das instruções da VM (doc 04 §5.7 da ksvm2):
+// FTOU para destino unsigned de 32 bits, FTOI para os demais (o codegen
+// reduz o resultado de FTOI a char/short depois, como wrap_to_type aqui).
+// Ambas truncam para zero, saturam e dão 0 para NaN. A conversão do host
+// seria UB fora do alcance.
+static int64_t float_to_int(Type *ty, float f) {
+  if (ty->size == 4 && ty->is_unsigned) {
+    if (!(f > -1.0f))           // NaN, negativos <= -1 (e -0.x trunca em 0)
+      return 0;
+    if (f >= 4294967296.0f)
+      return 0xFFFFFFFF;
+    return (uint32_t)f;
+  }
+  if (f != f)
+    return 0;
+  if (f >= 2147483648.0f)
+    return INT32_MAX;
+  if (f <= -2147483648.0f)
+    return INT32_MIN;
+  return (int32_t)f;
+}
+
+// kscc: valor de verdade de um operando de &&, ||, ! e ?: constante: para
+// ponto flutuante é `!= 0` (NaN é verdadeiro, -0 é falso), não o inteiro
+// truncado (`!0.5` valia 1).
+static bool eval_truth(Node *node) {
+  add_type(node);
+  if (is_flonum(node->ty))
+    return eval_double(node) != 0;
+  return eval(node) != 0;
+}
+
+// kscc: avalia uma expressão constante de ponto flutuante. Como float,
+// double e long double são todos binary32 (doc 02 §1), o resultado de cada
+// operação é arredondado para float, como na VM (RNE): o gcc com
+// -fsingle-precision-constant dobra do mesmo jeito. Cada operação é feita
+// em double e convertida: para + - * / de dois floats o double (53 bits >=
+// 2 * 24 + 2) torna o arredondamento duplo inócuo, e o resultado é o mesmo
+// bit a bit que FADD/FSUB/FMUL/FDIV, sem depender de FLT_EVAL_METHOD do
+// host. Inteiros viram float com um único arredondamento (de int64).
+static float eval_double(Node *node) {
   add_type(node);
 
   if (is_integer(node->ty)) {
     if (node->ty->is_unsigned)
-      return (unsigned long)eval(node);
-    return eval(node);
+      return (float)(uint64_t)eval(node);
+    return (float)eval(node);
   }
 
   switch (node->kind) {
   case ND_ADD:
-    return eval_double(node->lhs) + eval_double(node->rhs);
+    return (float)((double)eval_double(node->lhs) + (double)eval_double(node->rhs));
   case ND_SUB:
-    return eval_double(node->lhs) - eval_double(node->rhs);
+    return (float)((double)eval_double(node->lhs) - (double)eval_double(node->rhs));
   case ND_MUL:
-    return eval_double(node->lhs) * eval_double(node->rhs);
+    return (float)((double)eval_double(node->lhs) * (double)eval_double(node->rhs));
   case ND_DIV:
-    return eval_double(node->lhs) / eval_double(node->rhs);
+    return (float)((double)eval_double(node->lhs) / (double)eval_double(node->rhs));
   case ND_NEG:
     return -eval_double(node->lhs);
   case ND_COND:
-    return eval_double(node->cond) ? eval_double(node->then) : eval_double(node->els);
+    return eval_truth(node->cond) ? eval_double(node->then) : eval_double(node->els);
   case ND_COMMA:
     return eval_double(node->rhs);
   case ND_CAST:
-    if (is_flonum(node->lhs->ty))
-      return eval_double(node->lhs);
-    return eval(node->lhs);
+    return eval_double(node->lhs);
   case ND_NUM:
-    return node->fval;
+    return (float)node->fval;
   }
 
   error_tok(node->tok, "not a compile-time constant");
@@ -3064,16 +3165,25 @@ static Node *struct_ref(Node *node, Token *tok) {
   return node;
 }
 
-// kscc: A++ / A-- com A _Bool (variável ou campo). O valor novo é
-// saturado em 0/1, então (A += 1) - 1 não devolve o antigo: com A == 1,
-// A++ dava 0. Gera `p = &A, old = *p, *p = old + addend, old`, avaliando
-// o lvalue uma vez só (para um membro, p aponta para a struct, como em
-// to_assign, porque um bitfield não tem endereço).
-static Node *new_bool_inc_dec(Node *node, Token *tok, int addend) {
+// kscc: A++ / A-- com A _Bool ou de ponto flutuante (variável ou campo).
+// Nos dois casos (A += 1) - 1 não devolve o antigo: em _Bool o valor novo é
+// saturado em 0/1 (com A == 1, A++ dava 0); em float a soma arredonda
+// (0.1f + 1 - 1 != 0.1f, e 1e8f + 1 - 1 == 1e8f - 1 arredondado). Gera
+// `p = &A, old = *p, *p = old + addend, old`, avaliando o lvalue uma vez só
+// (para um membro, p aponta para a struct, como em to_assign, porque um
+// bitfield não tem endereço).
+static Node *new_tmp_inc_dec(Node *node, Token *tok, int addend) {
   bool member = node->kind == ND_MEMBER;
   Node *target = member ? node->lhs : node;
   Obj *ptr = new_lvar("", pointer_to(target->ty));
-  Obj *old = new_lvar("", ty_bool);
+  Type *vty = ty_bool;
+  if (node->ty->kind == TY_FLOAT)
+    vty = ty_float;
+  else if (node->ty->kind == TY_DOUBLE)
+    vty = ty_double;
+  else if (node->ty->kind == TY_LDOUBLE)
+    vty = ty_ldouble;
+  Obj *old = new_lvar("", vty);
 
   Node *ref[2];
   for (int i = 0; i < 2; i++) {
@@ -3096,14 +3206,14 @@ static Node *new_bool_inc_dec(Node *node, Token *tok, int addend) {
   expr = new_binary(ND_COMMA, expr, new_var_node(old, tok), tok);
 
   // Bitfield promove a int (ver promote_bitfield em type.c).
-  return new_cast(expr, (member && node->member->is_bitfield) ? ty_int : ty_bool);
+  return new_cast(expr, (member && node->member->is_bitfield) ? ty_int : vty);
 }
 
 // Convert A++ to `(typeof A)((A += 1) - 1)`
 static Node *new_inc_dec(Node *node, Token *tok, int addend) {
   add_type(node);
-  if (node->ty->kind == TY_BOOL)
-    return new_bool_inc_dec(node, tok, addend);
+  if (node->ty->kind == TY_BOOL || is_flonum(node->ty))
+    return new_tmp_inc_dec(node, tok, addend);
 
   Node *old = new_add(to_assign(new_add(node, new_num(addend, tok), tok)),
                       new_num(-addend, tok), tok);
@@ -3316,6 +3426,106 @@ static Node *generic_selection(Token **rest, Token *tok) {
   return ret;
 }
 
+// kscc: builtins de ponto flutuante, sem chamada (doc 03 §1, float):
+//
+//   __builtin_{sqrt,fabs,floor,ceil,trunc,rint,nearbyint}{,f,l}(x)
+//   __builtin_{fmin,fmax}{,f,l}(x, y)          uma instrução F cada
+//   __builtin_{isnan,isinf,isfinite,signbit}(x) teste sobre o binary32
+//   __builtin_{inf,huge_val}{,f,l}()           +inf constante
+//   __builtin_nan{,f,l}("...")                 NaN quieto 0x7FC00000
+//
+// O sufixo dá o tipo do resultado (nenhum: double; f: float; l: long
+// double), todos binary32. O argumento é convertido para esse tipo (os
+// testes de classificação convertem para float). Os nomes são os do gcc;
+// <math.h> os usa nas macros sqrtf, INFINITY, isnan, ...
+// Tipo dado pelo sufixo de `name` = `root` + {"", "f", "l"}; NULL se não
+// casa.
+static Type *builtin_suffix_type(char *name, char *root) {
+  int n = strlen(root);
+  if (strncmp(name, root, n))
+    return NULL;
+  if (!name[n])
+    return ty_double;
+  if (!strcmp(name + n, "f"))
+    return ty_float;
+  if (!strcmp(name + n, "l"))
+    return ty_ldouble;
+  return NULL;
+}
+
+static Node *float_builtin(Token **rest, Token *tok) {
+  static char *ops[][2] = {
+    {"sqrt", "fsqrt"}, {"fabs", "fabs"}, {"floor", "ffloor"}, {"ceil", "fceil"},
+    {"trunc", "ftrunc"}, {"rint", "frint"}, {"nearbyint", "frint"},
+    {"fmin", "fmin"}, {"fmax", "fmax"},
+    {"isnan", "isnan"}, {"isinf", "isinf"}, {"isfinite", "isfinite"},
+    {"signbit", "signbit"},
+  };
+
+  if (tok->kind != TK_IDENT || tok->len <= 10 || strncmp(tok->loc, "__builtin_", 10) ||
+      !equal(tok->next, "("))
+    return NULL;
+
+  char *name = strndup(tok->loc + 10, tok->len - 10);
+  Token *start = tok;
+  Type *ty;
+
+  // Constantes: +inf e NaN.
+  bool is_nan = false;
+  ty = builtin_suffix_type(name, "inf");
+  if (!ty)
+    ty = builtin_suffix_type(name, "huge_val");
+  if (!ty && (ty = builtin_suffix_type(name, "nan")))
+    is_nan = true;
+  if (ty) {
+    tok = skip(tok->next, "(");
+    if (is_nan) {
+      // O conteúdo da string (payload) é ignorado: a VM só produz o NaN
+      // canônico, e o kscc usa o mesmo.
+      if (tok->kind != TK_STR)
+        error_tok(tok, "__builtin_nan espera uma string");
+      tok = tok->next;
+    }
+    *rest = skip(tok, ")");
+    Node *node = new_node(ND_NUM, start);
+    node->fval = is_nan ? __builtin_nanf("") : __builtin_inff();
+    node->ty = ty;
+    return node;
+  }
+
+  char *op = NULL;
+  for (int i = 0; i < (int)(sizeof(ops) / sizeof(*ops)) && !op; i++)
+    if ((ty = builtin_suffix_type(name, ops[i][0])))
+      op = ops[i][1];
+  if (!op)
+    return NULL;
+
+  bool is_test = !strncmp(op, "is", 2) || !strcmp(op, "signbit");
+  int nargs = (!strcmp(op, "fmin") || !strcmp(op, "fmax")) ? 2 : 1;
+  if (is_test)
+    ty = ty_float;
+
+  tok = skip(tok->next, "(");
+  Node *args[2];
+  for (int i = 0; i < nargs; i++) {
+    if (i > 0)
+      tok = skip(tok, ",");
+    args[i] = assign(&tok, tok);
+    add_type(args[i]);
+    if (!is_numeric(args[i]->ty))
+      error_tok(args[i]->tok, "argumento aritmetico esperado em %.*s", start->len, start->loc);
+    args[i] = new_cast(args[i], ty);
+  }
+  *rest = skip(tok, ")");
+
+  Node *node = new_node(ND_FBUILTIN, start);
+  node->fop = op;
+  node->lhs = args[0];
+  node->rhs = nargs == 2 ? args[1] : NULL;
+  node->ty = is_test ? ty_int : ty;
+  return node;
+}
+
 // primary = "(" "{" stmt+ "}" ")"
 //         | "(" expr ")"
 //         | "sizeof" "(" type-name ")"
@@ -3405,6 +3615,11 @@ static Node *primary(Token **rest, Token *tok) {
     return new_cast(node, ty_long);
   }
 
+  // kscc: builtins de ponto flutuante (sqrtf, fabsf, isnan, INFINITY...).
+  Node *fb = float_builtin(rest, tok);
+  if (fb)
+    return fb;
+
   if (equal(tok, "__builtin_reg_class")) {
     tok = skip(tok->next, "(");
     Type *ty = typename(&tok, tok);
@@ -3478,13 +3693,10 @@ static Node *primary(Token **rest, Token *tok) {
     return new_var_node(var, tok);
   }
 
-  // kscc: literais de ponto flutuante (fase 6) e inteiros que só cabem em
-  // long long (fase 5) são rejeitados, exceto em #if, que o C avalia em
-  // intmax_t (ver pp_const_expr).
+  // kscc: inteiros que só cabem em long long (fase 5) são rejeitados,
+  // exceto em #if, que o C avalia em intmax_t (ver pp_const_expr).
   if (tok->kind == TK_NUM && !pp_mode) {
-    if (is_flonum(tok->ty))
-      error_tok(tok, "ponto flutuante nao suportado nesta versao do kscc");
-    if (tok->ty->size > 4)
+    if (!is_flonum(tok->ty) && tok->ty->size > 4)
       error_tok(tok, "constante nao cabe em 32 bits (long long nao suportado nesta versao do kscc)");
   }
 

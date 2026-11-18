@@ -256,6 +256,12 @@ static Node *new_vla_ptr(Obj *var, Token *tok) {
 Node *new_cast(Node *expr, Type *ty) {
   add_type(expr);
 
+  // kscc: ponteiro <-> ponto flutuante não é conversão do C (C11 6.5.4p4,
+  // 6.5.6p2): `a[f]`, `p + 1.5f`, `int *p = f` e `p == 1.0f` passavam por
+  // aqui e viravam FTOU/UTOF dos bits.
+  if ((is_flonum(expr->ty) && ty->base) || (expr->ty->base && is_flonum(ty)))
+    error_tok(expr->tok, "conversao invalida entre ponteiro e ponto flutuante");
+
   Node *node = calloc(1, sizeof(Node));
   node->kind = ND_CAST;
   node->tok = expr->tok;

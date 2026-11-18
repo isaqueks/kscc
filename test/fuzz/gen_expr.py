@@ -32,6 +32,22 @@ Como evitar UB (C11) sem perder cobertura de operações com sinal:
     estimado para limitar o total de passos
 Conversões para tipos menores com sinal são definidas pela implementação
 (módulo 2^n no gcc e no kscc) e fazem parte do que é testado.
+
+    python3 test/fuzz/gen_expr.py SEMENTE float > prog.c
+
+gera um programa de ponto flutuante (FloatGen): só float (nunca double),
+comparado com o gcc -m32 -msse -mfpmath=sse -fsingle-precision-constant
+(binary32 sem precisão estendida, como a KSVM). Sem UB nem diferença
+legítima entre os dois:
+  * float -> inteiro só por f2i/f2u, que devolvem uma constante fora do
+    alcance e para NaN (a conversão seria UB; o kscc satura, o x86 não)
+  * divisão por zero, inf e NaN à vontade (IEEE, definidos), mas todo
+    float impresso ou misturado ao hash passa por fb(), que troca qualquer
+    NaN pelo canônico (o x86 produz 0xFFC00000, a KSVM 0x7FC00000)
+  * sem fminf/fmaxf (fmax(-0, +0) não é fixado pelo C)
+  * funções float são puras (só leem globais), então podem aparecer
+    dentro de expressões sem depender da ordem de avaliação
+  * contadores de laço inteiros; índices mascarados
 """
 
 import random
@@ -438,9 +454,233 @@ class Gen:
         return "\n".join(self.out) + "\n"
 
 
+class FloatGen:
+    """Programa aleatório de ponto flutuante (binary32), ver o topo."""
+
+    BUILTINS = ["sqrtf(fabsf(%s))", "fabsf(%s)", "floorf(%s)", "ceilf(%s)", "truncf(%s)",
+                "rintf(%s)", "roundf(%s)"]
+
+    def __init__(self, seed):
+        self.r = random.Random(seed * 7919 + 17)
+        self.seed = seed
+        self.out = []
+        self.fglobals = []   # nomes de float globais (escalares)
+        self.iglobals = []   # nomes de int globais
+        self.funcs = []      # (nome, [tipos dos parâmetros 'f'/'i'])
+        self.ind = 0
+        self.uid = 0
+
+    def emit(self, line):
+        self.out.append("  " * self.ind + line)
+
+    def fconst(self):
+        r = self.r
+        c = r.random()
+        if c < 0.25:
+            v = r.choice(["0.0f", "-0.0f", "1.0f", "-1.0f", "0.5f", "2.0f", "3.0f", "0.1f",
+                          "10.0f", "1e-45f", "1.17549435e-38f", "3.4028235e38f", "16777216.0f",
+                          "1e30f", "-1e-30f", "0.333333343f", "7.0f", "1e10f"])
+        elif c < 0.5:
+            v = "%.9gf" % r.uniform(-100, 100)
+        elif c < 0.65:
+            v = "%.4g" % r.uniform(-10, 10)       # sem sufixo: float (-fsingle-precision-constant)
+        elif c < 0.8:
+            v = "%d.0f" % r.randrange(-1000, 1000) if r.random() < 0.5 else "%d.5f" % r.randrange(0, 50)
+        else:
+            v = "%.6ef" % (r.uniform(1, 10) * 10.0 ** r.randrange(-40, 39))
+        if not v[0].isdigit() and v[0] != ".":
+            v = "(" + v + ")"
+        return v
+
+    def iconst(self):
+        return str(self.r.choice([0, 1, -1, 2, 3, 7, 100, -100, 255, 65536, 16777217, 2147483647]))
+
+    def fleaf(self, fs):
+        r = self.r
+        c = r.random()
+        if c < 0.3 or not fs:
+            return self.fconst()
+        if c < 0.85:
+            return r.choice(fs)
+        if c < 0.93:
+            return "fa[(%s) & 3]" % self.iexpr([], [], 1)
+        return "gs.%s" % r.choice(["x", "y"])
+
+    def fexpr(self, fs, is_, depth):
+        r = self.r
+        if depth <= 0 or r.random() < 0.25:
+            return self.fleaf(fs)
+        c = r.random()
+        if c < 0.45:
+            op = r.choice(["+", "-", "*", "/", "+", "*"])
+            return "(%s %s %s)" % (self.fexpr(fs, is_, depth - 1), op, self.fexpr(fs, is_, depth - 1))
+        if c < 0.52:
+            return "(-%s)" % self.fexpr(fs, is_, depth - 1)
+        if c < 0.62:
+            return "((float)(%s))" % self.iexpr(fs, is_, depth - 1)
+        if c < 0.72:
+            return "(%s ? %s : %s)" % (self.cond(fs, is_, depth - 1), self.fexpr(fs, is_, depth - 1),
+                                       self.fexpr(fs, is_, depth - 1))
+        if c < 0.82:
+            return r.choice(self.BUILTINS) % self.fexpr(fs, is_, depth - 1)
+        if c < 0.92 and self.funcs:
+            name, params = r.choice(self.funcs)
+            args = [self.fexpr(fs, is_, depth - 2) if t == "f" else self.iexpr(fs, is_, depth - 2)
+                    for t in params]
+            return "%s(%s)" % (name, ", ".join(args))
+        return self.fleaf(fs)
+
+    def cond(self, fs, is_, depth):
+        r = self.r
+        c = r.random()
+        if c < 0.7:
+            op = r.choice(["<", "<=", ">", ">=", "==", "!="])
+            return "(%s %s %s)" % (self.fexpr(fs, is_, depth), op, self.fexpr(fs, is_, depth))
+        if c < 0.8:
+            return "(!%s)" % self.fexpr(fs, is_, depth)
+        if c < 0.9:
+            return "(%s %s %s)" % (self.cond(fs, is_, depth - 1), r.choice(["&&", "||"]),
+                                   self.cond(fs, is_, depth - 1))
+        return "(!!%s)" % self.fexpr(fs, is_, depth)  # float como valor de verdade
+
+    def iexpr(self, fs, is_, depth):
+        r = self.r
+        c = r.random()
+        if depth <= 0 or c < 0.3:
+            return r.choice(is_) if is_ and r.random() < 0.6 else self.iconst()
+        if c < 0.55:
+            return "%s(%s)" % (r.choice(["f2i", "f2i", "f2u", "f2c"]), self.fexpr(fs, is_, depth - 1))
+        if c < 0.75:
+            return self.cond(fs, is_, depth - 1)
+        if c < 0.9:
+            return "((%s) ^ (%s))" % (self.iexpr(fs, is_, depth - 1), self.iexpr(fs, is_, depth - 1))
+        return "((%s) & 0xFFFF)" % self.iexpr(fs, is_, depth - 1)
+
+    def stmts(self, fs, is_, depth, n, mutable_f, mutable_i, in_main):
+        r = self.r
+        for _ in range(n):
+            c = r.random()
+            if depth <= 0:
+                c *= 0.5
+            if c < 0.3 and mutable_f:
+                self.emit("%s = %s;" % (r.choice(mutable_f), self.fexpr(fs, is_, 4)))
+            elif c < 0.42 and mutable_f:
+                v = r.choice(mutable_f)
+                op = r.choice(["+=", "-=", "*=", "/="])
+                self.emit("%s %s %s;" % (v, op, self.fexpr(fs, is_, 2)))
+            elif c < 0.48 and mutable_f:
+                v = r.choice(mutable_f)
+                pre = r.choice(["++", "--"])
+                if r.random() < 0.5:
+                    self.emit("%s%s;" % (pre, v))
+                else:
+                    t = self.fresh("t")
+                    self.emit("float %s = %s%s;" % (t, v, pre))
+                    self.emit("h = h * 31u + fb(%s);" % t)
+            elif c < 0.55 and mutable_i:
+                self.emit("%s ^= %s;" % (r.choice(mutable_i), self.iexpr(fs, is_, 3)))
+            elif c < 0.62 and in_main:
+                self.emit("fa[(%s) & 3] = %s;" % (self.iexpr(fs, is_, 1), self.fexpr(fs, is_, 3)))
+            elif c < 0.75:
+                self.emit("if %s {" % self.cond(fs, is_, 3))
+                self.ind += 1
+                self.stmts(fs, is_, depth - 1, r.randint(1, 3), mutable_f, mutable_i, in_main)
+                self.ind -= 1
+                if r.random() < 0.5:
+                    self.emit("} else {")
+                    self.ind += 1
+                    self.stmts(fs, is_, depth - 1, r.randint(1, 3), mutable_f, mutable_i, in_main)
+                    self.ind -= 1
+                self.emit("}")
+            elif c < 0.85:
+                i = self.fresh("i")
+                self.emit("for (int %s = 0; %s < %d; %s++) {" % (i, i, r.randint(1, 6), i))
+                self.ind += 1
+                self.stmts(fs, is_ + [i], depth - 1, r.randint(1, 3), mutable_f, mutable_i, in_main)
+                self.ind -= 1
+                self.emit("}")
+            else:
+                self.emit("h = h * 31u + fb(%s);" % self.fexpr(fs, is_, 3))
+
+    def fresh(self, p):
+        self.uid += 1
+        return "%s%d" % (p, self.uid)
+
+    def program(self):
+        r = self.r
+        o = self.out
+        o.append("// gerado por test/fuzz/gen_expr.py %d float" % self.seed)
+        o.append("#include <math.h>")
+        o.append('#include "fltout.h"')
+        o.append("")
+        o.append("// float -> inteiro sem UB: fora do alcance e NaN dão constantes")
+        o.append("static int f2i(float x) { return (x > -2147483648.0f && x < 2147483648.0f) ? (int)x : (x != x ? 7 : -9); }")
+        o.append("static int f2u(float x) { return (x > -1.0f && x < 4294967296.0f) ? (int)(unsigned)x : 5; }")
+        o.append("static int f2c(float x) { return (signed char)f2i(x); }")
+        o.append("// bits com NaN canônico")
+        o.append("static unsigned fb(float x) { return x != x ? 0x7FC00000u : fl_bits(x); }")
+        o.append("")
+        for k in range(r.randint(3, 6)):
+            name = "g%d" % k
+            o.append("static float %s = %s;" % (name, self.fconst()))
+            self.fglobals.append(name)
+        for k in range(r.randint(1, 3)):
+            name = "n%d" % k
+            o.append("static int %s = %s;" % (name, self.iconst()))
+            self.iglobals.append(name)
+        o.append("static float fa[4] = {%s};" % ", ".join(self.fconst() for _ in range(4)))
+        o.append("static struct { float x; int k; float y; } gs = {%s, 3, %s};" % (self.fconst(), self.fconst()))
+        o.append("")
+        # funções puras: só leem globais e parâmetros
+        for fi in range(r.randint(2, 5)):
+            name = "fn%d" % fi
+            params = [r.choice("ffi") for _ in range(r.randint(1, 5))]
+            pnames = ["p%d" % k for k in range(len(params))]
+            decl = ", ".join(("float %s" if t == "f" else "int %s") % pn for t, pn in zip(params, pnames))
+            o.append("static float %s(%s) {" % (name, decl))
+            self.ind = 1
+            fs = self.fglobals + [pn for t, pn in zip(params, pnames) if t == "f"]
+            is_ = self.iglobals + [pn for t, pn in zip(params, pnames) if t == "i"]
+            locs = []
+            for li in range(r.randint(1, 3)):
+                ln = "l%d" % li
+                self.emit("float %s = %s;" % (ln, self.fexpr(fs + locs, is_, 3)))
+                locs.append(ln)
+            self.emit("unsigned h = 0;")
+            self.stmts(fs + locs, is_, 2, r.randint(1, 4), locs, [], False)
+            self.emit("(void)h;")
+            self.emit("return %s;" % self.fexpr(fs + locs, is_, 3))
+            self.ind = 0
+            o.append("}")
+            o.append("")
+            self.funcs.append((name, params))
+        o.append("int main(void) {")
+        self.ind = 1
+        self.emit("unsigned h = 0;")
+        fs = list(self.fglobals) + ["gs.x", "gs.y"]
+        self.stmts(fs, list(self.iglobals), 3, r.randint(6, 14), fs, list(self.iglobals), True)
+        for name, params in self.funcs:
+            args = [self.fconst() if t == "f" else self.iconst() for t in params]
+            self.emit("h = h * 31u + fb(%s(%s));" % (name, ", ".join(args)))
+        for g in self.fglobals + ["gs.x", "gs.y", "fa[0]", "fa[1]", "fa[2]", "fa[3]"]:
+            self.emit('printf("%s ");' % g)
+            self.emit("fl_hex(%s);" % g)
+            self.emit('printf("%%d %%.3g\\n", f2i(%s), %s != %s ? 0.0f : %s);' % (g, g, g, g))
+        for g in self.iglobals:
+            self.emit('printf("%s %%d\\n", %s);' % (g, g))
+        self.emit('printf("hash %08x\\n", h);')
+        self.emit("return 0;")
+        self.ind = 0
+        o.append("}")
+        return "\n".join(o) + "\n"
+
+
 def main():
     seed = int(sys.argv[1]) if len(sys.argv) > 1 else 1
-    sys.stdout.write(Gen(seed).program())
+    if len(sys.argv) > 2 and sys.argv[2] == "float":
+        sys.stdout.write(FloatGen(seed).program())
+    else:
+        sys.stdout.write(Gen(seed).program())
 
 
 if __name__ == "__main__":

@@ -9,12 +9,17 @@
 #     fail-compile  o kscc não compilou um programa que o gcc compila
 #     fail-run      saídas ou códigos de saída diferentes
 # e $detail com o motivo (uma linha).
+#
+# O gcc usa ponto flutuante binary32 como o da KSVM (doc 06 §1): SSE em vez
+# do x87, sem precisão estendida nem contração em FMA, literais sem sufixo
+# em float; -lm para <math.h>. Nada disso muda os programas inteiros.
 
 KSCC=${KSCC:-build/kscc}
 KSVM=${KSVM:-${KSVM2_HOME:-../ksvm2}/build/tools/ksvm}
 CC32=${CC32:-gcc}
 FUZZ_MAX_INSNS=${FUZZ_MAX_INSNS:-500000000}
 GCC_TIMEOUT=${GCC_TIMEOUT:-10}
+FUZZ_FLOAT_FLAGS="-msse -mfpmath=sse -fexcess-precision=standard -fsingle-precision-constant -ffp-contract=off"
 
 diff_one() {
   local name=$1 src=$2 out=$3 incs=$4
@@ -22,8 +27,8 @@ diff_one() {
   verdict=pass
   detail=
 
-  if ! $CC32 -m32 -std=c11 -O1 -w -fwrapv -fno-strict-aliasing $incs -o "$base.gcc" "$src" \
-       2> "$base.gcc.cerr"; then
+  if ! $CC32 -m32 -std=c11 -O1 -w -fwrapv -fno-strict-aliasing $FUZZ_FLOAT_FLAGS $incs \
+       -o "$base.gcc" "$src" -lm 2> "$base.gcc.cerr"; then
     verdict=skip-gcc; detail="gcc nao compilou: $(head -1 "$base.gcc.cerr")"; return
   fi
   timeout "$GCC_TIMEOUT" "./$base.gcc" > "$base.gcc.out" 2> /dev/null

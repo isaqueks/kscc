@@ -197,6 +197,27 @@ $kscc -Wl,--no-gc-sections,--gc-sections -o $tmp/foo2 $tmp/lk.c
 cmp -s $tmp/foo $tmp/foo2
 check '-Wl,--gc-sections (ultima vence)'
 
+# kscc: a conversão de ponto flutuante do printf é uma referência fraca
+# (src/link.c, passo 5): entra só se o programa usa printf e passa
+# float/double a uma variádica (o codegen emite "; kscc-need:").
+echo '#include <stdio.h>
+int main() { printf("%.2f %d\n", 1.5f, 7); return 0; }' > $tmp/pf.c
+$kscc -S -o- $tmp/pf.c | grep -q '^; kscc-need: __ks_weak_printf_float'
+check 'float em variadica: kscc-need'
+$kscc -o $tmp/pf $tmp/pf.c
+[ "$($KSVM $tmp/pf)" = "1.50 7" ]
+check 'printf %f liga a conversao'
+[ $(wc -c < $tmp/pf) -gt $(( $(wc -c < $tmp/foo) + 8000 )) ]
+check 'printf sem float nao leva a conversao'
+echo '#include <stdarg.h>
+static int sum(int n, ...) { va_list ap; va_start(ap, n); int r = n + (int)va_arg(ap, double); va_end(ap); return r; }
+int main() { return sum(1, 2.5f); }' > $tmp/vf.c
+sed 's/(int)va_arg(ap, double)/va_arg(ap, int)/; s/2.5f/2/' $tmp/vf.c > $tmp/vi.c
+$kscc -o $tmp/vf $tmp/vf.c && $kscc -o $tmp/vi $tmp/vi.c
+$KSVM $tmp/vf
+[ "$?" = 3 ] && [ $(wc -c < $tmp/vf) -lt $(( $(wc -c < $tmp/vi) + 1000 )) ]
+check 'float em variadica sem printf nao leva a conversao'
+
 # Função do usuário com nome da libks vence (como num .a do Unix), e a da
 # libks não entra (senão o ksas acusaria label duplicado)
 echo '#include <string.h>
